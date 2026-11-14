@@ -25,7 +25,7 @@ struct RotationDial: View {
                         let major = i % 18 == 0, mid = i % 6 == 0
                         let h: CGFloat = major ? 16 : (mid ? 11 : 6)
                         Capsule()
-                            .fill(major ? ContentView.pink : (mid ? Color.white.opacity(0.75) : ContentView.sub.opacity(0.45)))
+                            .fill(major ? ContentView.pink : (mid ? (Settings.shared.uiLight ? ContentView.ink.opacity(0.55) : Color.white.opacity(0.75)) : ContentView.sub.opacity(0.45)))
                             .frame(width: major ? 3 : 1.5, height: h)
                             .offset(y: -(size / 2 - h / 2 - 6))
                             .rotationEffect(.degrees(Double(i) * 5))
@@ -42,7 +42,7 @@ struct RotationDial: View {
                 .rotationEffect(.degrees(Double(degrees)))
                 // 固定的部分：中间的度数
                 VStack(spacing: 0) {
-                    Text("\(degrees)°").font(.system(size: 30, weight: .bold, design: .rounded)).foregroundColor(.white)
+                    Text("\(degrees)°").font(.system(size: 30, weight: .bold, design: .rounded)).foregroundColor(ContentView.ink)
                     Text(dragging ? "转动中" : "按住转动").font(.caption2).foregroundColor(ContentView.sub)
                 }
                 .frame(width: size * 0.36, height: size * 0.36)
@@ -75,9 +75,10 @@ struct RotationDial: View {
 
     /// 手指位置 → 角度（0 = 正上方，顺时针为正）
     private func fingerAngle(_ p: CGPoint) -> Double? {
-        let dx = Double(p.x - size / 2), dy = Double(p.y - size / 2)
-        if dx * dx + dy * dy < 225.0 { return nil }        // 太靠近圆心，角度不稳，不算
-        return atan2(dx, -dy) * 180.0 / Double.pi
+        let dx = p.x - size / 2, dy = p.y - size / 2
+       let r2: CGFloat = 15 * 15
+        if dx * dx + dy * dy < r2 { return nil }        // 太靠近圆心，角度不稳，不算
+        return atan2(dx, -dy) * 180.0 / .pi
     }
 
     private func onDrag(_ p: CGPoint) {
@@ -106,7 +107,7 @@ struct RotationDial: View {
 
     private func dialButton(_ t: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(t).font(.subheadline.bold()).foregroundColor(.white)
+            Text(t).font(.subheadline.bold()).foregroundColor(ContentView.ink)
                 .frame(minWidth: 64, minHeight: 34)
                 .background(Capsule().fill(ContentView.bg))
                 .overlay(Capsule().stroke(ContentView.stroke, lineWidth: 1))

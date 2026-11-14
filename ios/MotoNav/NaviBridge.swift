@@ -30,6 +30,11 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published var routeReady = false
     @Published var navigating = false
     @Published var info = "（还没开始导航）"
+    // 车牌限行：只显示高德 SDK 真正返回的结果，不再写「已避开限行」这种未经验证的状态
+    @Published private(set) var vehicleInfoAccepted = false   // setVehicleInfo 是否被高德接受
+    @Published private(set) var restrictionType = -1          // AMapNaviRestrictionInfo.titleType
+    @Published private(set) var restrictionTitle = ""
+    private var vehicleRetry = 0
     @Published var routeSummary = ""
     // 给界面看
     @Published var uiDir = ""
@@ -44,8 +49,7 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published private(set) var emulating = false
     @Published private(set) var emuPaused = false
     @Published private(set) var emuSpeed = 60
-    private static let EMU_SPEEDS = NavigationSpeed.values
-    @Published var preferredSimulationSpeed=60
+    private static let EMU_SPEEDS = [40, 60, 100, 120]
     // 调试信息
     @Published var laneRaw = "（还没收到车道信息）"
     @Published var camRaw = "（还没收到电子眼信息）"
@@ -61,9 +65,101 @@ final class NaviBridge: NSObject, ObservableObject {
     }
     @Published var routeOptions: [RouteOption] = []
     @Published var selectedRouteID = -1
+
+    /// 路况光柱分段：沿当前路线累计米数 [startM, endM)，
+    /// status = 0 未知 / 1 畅通 / 2 缓行 / 3 拥堵 / 4 严重拥堵（与 pushTraffic 的约定一致）
+    struct TrafficSeg {
+        let startM: Int, endM: Int, status: Int
+    }
+    /// 给首页地图用的路况分段：把选中路线折线染成绿 / 黄 / 红 / 深红（苹果地图式）
+    @Published var trafficSegs: [TrafficSeg] = []
+
+    /// 本次选中路线相对其他备选方案「避开 / 改走」的具体道路（取自高德 AMapNaviLink.roadName）
+    struct RoadBrief {
+        var avoided: [String] = []       // 其他方案走、本方案不走的道路
+        var used: [String] = []          // 本方案走、其他方案不走的道路
+        var mainRoads: [String] = []     // 本方案途经的主要道路（按里程排序）
+        var hasAlternatives = false      // 是否有其他方案可对比
+    }
+    @Published private(set) var roadBrief = RoadBrief()
+
+    /// 按 AMapNaviLink.roadName 统计每条道路的里程，取主要道路（roadName 是 SDK 官方文档确认的属性）
+    private func roadNames(of r: AMapNaviRoute) -> [String] {
+        var meters: [String: Int] = [:]
+        for s in r.routeSegments {
+            for l in s.links {
+                // roadName 在不同 SDK 版本里可能导入为 String / String? / String!，
+                // 用 as? String 统一兼容，非可选时也不会触发 nil 合并的编译错误
+                guard let n = l.roadName as? String, !n.isEmpty else { continue }
+                meters[n, default: 0] += l.length
+            }
+        }
+        return meters.sorted { $0.value > $1.value }.prefix(12).map { $0.key }
+    }
+
+    /// 把选中方案与其他备选方案的道路名做差集：避开的线路 / 改走的线路。
+    /// 只有一个方案时没有对比基准，交给界面显示「本方案途经的主要道路」，不编造线路。
+    func refreshRoadBrief(_ routes: [NSNumber: AMapNaviRoute]? = nil, pickedID: Int? = nil) {
+        let rs = routes ?? manager.naviRoutes ?? [:]
+        let pid = pickedID ?? manager.naviRouteID
+        guard let picked = rs[NSNumber(value: pid)] ?? (pid == manager.naviRouteID ? manager.naviRoute : nil) else {
+            roadBrief = RoadBrief(); return
+        }
+        let main = roadNames(of: picked)
+        var others = Set<String>()
+        var alt = false
+        for (k, r) in rs where k.intValue != pid {
+            if r.routeSegments.isEmpty { continue }
+            alt = true
+            others.formUnion(roadNames(of: r))
+        }
+        var b = RoadBrief(mainRoads: Array(main.prefix(6)), hasAlternatives: alt)
+        if alt {
+            let mainSet = Set(main)
+            b.avoided = Array(others.subtracting(mainSet).sorted().prefix(6))
+            b.used = Array(main.filter { !others.contains($0) }.prefix(6))
+        }
+        roadBrief = b
+    }
+
+    /// 从高德导航 SDK 的路况光柱生成按米数的分段；算路成功、切换方案、导航中回调都会刷新。
+    /// 数据是 SDK 已验证可用的 getTrafficStatuses() / AMapNaviTrafficStatus，未引入新 API。
+    func refreshTrafficSegs(_ input: [AMapNaviTrafficStatus]? = nil) {
+        guard let list = input ?? manager.getTrafficStatuses(), !list.isEmpty else {
+            if !trafficSegs.isEmpty { trafficSegs = [] }
+            return
+        }
+        var segs: [TrafficSeg] = []
+        var pos = 0
+        for o in list {
+            let len = o.length
+            let st = o.status.rawValue
+            if len > 0 {
+                if let last = segs.last, last.status == st, last.endM >= pos - 5 {
+                    segs[segs.count - 1] = TrafficSeg(startM: last.startM, endM: pos + len, status: st)
+                } else {
+                    segs.append(TrafficSeg(startM: pos, endM: pos + len, status: st))
+                }
+            }
+            pos += len
+        }
+        trafficSegs = segs
+    }
     @Published var shareMatch = ""                  // 和分享路线的吻合程度
     @Published private(set) var shareRoute: AmapShare.Route?
-    struct Via { let name: String; let lat: Double; let lng: Double }
+    struct Via: Identifiable { let id = UUID(); let name: String; let lat: Double; let lng: Double }
+
+    /// 首页停靠站列表的统一模型：第一个 = 起点、最后一个 = 终点、中间 = 途经点。
+    /// myLocation = true 表示「我的位置」；lat/lng 是派生时的定位快照，
+    /// 被拖到中间时也能当作一个普通途经点用。
+    struct Stop: Identifiable, Equatable {
+        var id: String
+        var name: String
+        var lat: Double
+        var lng: Double
+        var myLocation: Bool
+    }
+    @Published private(set) var customStart: Stop? = nil  // nil = 起点为「我的位置」（用实时定位）
     @Published private(set) var vias: [Via] = []     // iOS v0.4 途经点（分享的路线自带途经点，不用这个）
     var destCoord: CLLocationCoordinate2D? { destLat.isNaN ? nil : CLLocationCoordinate2D(latitude: destLat, longitude: destLng) }
     private var destLat = Double.nan, destLng = Double.nan
@@ -199,6 +295,7 @@ final class NaviBridge: NSObject, ObservableObject {
         m.setMultipleRouteNaviMode(true)
         m.updateCameraInfo = true
         m.updateTrafficInfo = true
+        applyVehicleInfo()                          // 车牌 / 限行：算路前把车牌交给高德
     }
 
     /// Relinquish planning callbacks while independent guidance reads static camera metadata.
@@ -210,6 +307,67 @@ final class NaviBridge: NSObject, ObservableObject {
         sessionCallbacks=nil;manager.delegate=nil;attached=false
         calculating=false;routeReady=false;routeOptions=[];selectedRouteID = -1
         return true
+    }
+
+    // MARK: - 车牌与限行
+
+    /// 算路前把车牌交给高德：AMapNaviVehicleInfo.vehicleId + isETARestriction + type。
+    /// 高德官方：只有 isETARestriction = YES 且设置了车牌号，算路才会规避车辆限行。
+    /// setVehicleInfo 返回 BOOL，之前直接忽略返回值导致「车牌没生效但界面照样写已避开限行」；
+    /// 这里记录返回值，失败时（SDK 还没初始化完）1.2 秒后补一次。
+    @discardableResult
+    func applyVehicleInfo() -> Bool {
+        let s = Settings.shared
+        let plate = s.plateInUse
+        let active = s.avoidRestriction && Settings.plateValid(plate)
+        let info = AMapNaviVehicleInfo()
+        info.vehicleId = active ? plate : ""
+        info.isETARestriction = active
+        info.type = s.vehicleType
+        let ok = manager.setVehicleInfo(info)
+        vehicleInfoAccepted = ok && active
+        if ok {
+            vehicleRetry = 0
+        } else if active, vehicleRetry < 1 {
+            vehicleRetry += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self = self else { return }
+                _ = self.applyVehicleInfo()
+            }
+        }
+        return ok
+    }
+
+    /// 高德 AMapNaviRestrictionInfo.titleType：2/7 已避开，0/1 建议设置车牌 / 开启限行，
+    /// 3/4/5 起终点或途经点在限行区域内（无法规避），6 途经限行区，8 到达时已失效。
+    var restrictionOK: Bool { restrictionType == 2 || restrictionType == 7 }
+
+    /// 界面上显示的、经过高德返回值证实的限行结论
+    var restrictionSummary: String {
+        let s = Settings.shared
+        guard s.restrictionActive else { return "未开启车牌限行规避" }
+        guard vehicleInfoAccepted else {
+            return "高德未接受车牌 \(s.plateInUse)：检查车牌格式、高德 Key 与导航 SDK 权限"
+        }
+        switch restrictionType {
+        case 2, 7: return "已按 \(s.plateInUse) 避开限行区域"
+        case 0:    return "高德提示：外地车限行，建议设置车牌"
+        case 1:    return "高德提示：外地车限行，建议开启限行规避"
+        case 3:    return "起点在限行区域内，无法规避"
+        case 4:    return "终点在限行区域内，无法规避"
+        case 5:    return "途经点在限行区域内，无法规避"
+        case 6:    return "路线仍经过限行区域"
+        case 8:    return "到达时限行已失效"
+        default:
+            if !restrictionTitle.isEmpty { return restrictionTitle }
+            return "已提交车牌 \(s.plateInUse)，本次路线未返回限行信息（该区域可能没有适用规则）"
+        }
+    }
+
+    /// 车牌 / 车型 / 限行开关改了：已经算过路线就按新车牌重算一次
+    func replanIfNeeded() {
+        guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
+        replan()
     }
 
     // MARK: - 路线和导航
@@ -228,6 +386,7 @@ final class NaviBridge: NSObject, ObservableObject {
         guard !navigating,!WebMotorSession.shared.running else { return }
         attach()
         destLat = lat; destLng = lng
+        customStart = nil                            // 新目的地：起点回到「我的位置」
         shareRoute = share
         vias = []                                    // 新目的地：途经点清空
         replan()
@@ -240,16 +399,46 @@ final class NaviBridge: NSObject, ObservableObject {
         replan()
     }
 
-    func replaceVias(_ points:[MotorPoint]) {
-        guard !navigating,!cruising,shareRoute == nil,points.count<=3,
-              points.allSatisfy({MotorRequest.valid($0.lat,$0.lng)}) else{return}
-        vias=points.map{Via(name:$0.name,lat:$0.lat,lng:$0.lng)}
-        replan()
-    }
-
     func clearVias() {
         if vias.isEmpty { return }
         vias = []
+        replan()
+    }
+
+    /// 单独删一个途经点并重新规划（途经点管理页用）
+    func removeVia(id: UUID) {
+        guard shareRoute == nil, let i = vias.firstIndex(where: { $0.id == id }) else { return }
+        vias.remove(at: i)
+        replan()
+    }
+
+    /// 拖动调序（SwiftUI onMove：src 是原下标，dst 是移动后的目标位置）
+    func moveVia(from src: Int, to dst: Int) {
+        guard shareRoute == nil, vias.indices.contains(src), dst >= 0 else { return }
+        let v = vias.remove(at: src)
+        let target = dst > src ? dst - 1 : dst
+        vias.insert(v, at: min(max(target, 0), vias.count))
+        replan()
+    }
+
+    /// 首页停靠站拖动 / 左滑删除后的整体重排：起点、终点也能被拖到任意位置。
+    /// ordered[0] = 新起点，ordered.last = 新终点，中间 = 途经点；随后重新算路。
+    func applyStops(_ ordered: [Stop]) {
+        guard ordered.count >= 2, !navigating,
+              !WebMotorSession.shared.running, shareRoute == nil else { return }
+        let first = ordered[0], last = ordered[ordered.count - 1]
+        customStart = first.myLocation ? nil
+            : Stop(id: "start", name: first.name, lat: first.lat, lng: first.lng, myLocation: false)
+        destLat = last.lat; destLng = last.lng
+        // 复用已有 Via（按坐标匹配），保持 id 稳定：拖动落位后 ForEach 不会因为
+        // 全量新建 UUID 而重建整张列表，行不塌陷、不弹回。
+        let previous = vias
+        vias = ordered[1..<(ordered.count - 1)].map { s in
+            if let hit = previous.first(where: { abs($0.lat - s.lat) < 0.000001 && abs($0.lng - s.lng) < 0.000001 }) {
+                return hit
+            }
+            return Via(name: s.name, lat: s.lat, lng: s.lng)
+        }
         replan()
     }
 
@@ -263,15 +452,19 @@ final class NaviBridge: NSObject, ObservableObject {
         MapFeeder.shared.onNaviEnd()
         planSeq += 1
         destLat = .nan; destLng = .nan
-        shareRoute = nil; vias = []
+        shareRoute = nil; vias = []; customStart = nil
         calculating = false; routeReady = false; planFailed = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""; routeSummary = ""
+        trafficSegs = []
+        roadBrief = RoadBrief()
+        restrictionType = -1; restrictionTitle = ""
         info = "（还没开始导航）"
     }
 
     /// 按上次的目的地重新规划（比如切换了“不走高速”）
     func replan(retry: Int = 1) {
         guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
+        applyVehicleInfo()                          // 车牌 / 限行设置可能刚改过
         planFailed = false
         MapFeeder.shared.onNaviEnd()
         if cruising { stopCruise() }
@@ -286,6 +479,8 @@ final class NaviBridge: NSObject, ObservableObject {
         calculating = true
         routeReady = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""
+        roadBrief = RoadBrief()
+        restrictionType = -1; restrictionTitle = ""
         let avoid = Settings.shared.avoidHighway
         let me = myPosition()
         var wps: [AMapNaviPoint] = []
@@ -300,8 +495,18 @@ final class NaviBridge: NSObject, ObservableObject {
             strategy = ConvertDrivingPreferenceToDrivingStrategy(true, true, avoid, false, false)     // 多条路线 + 躲避拥堵
             info = vias.isEmpty ? "正在规划路线…" : "正在规划路线（途经 \(vias.count) 个地方）…"
         }
+        // 起点优先级：拖动重排指定的自定义起点 > 当前定位 > 交给 SDK 用定位
+        let startPoint: AMapNaviPoint? = {
+            if let s = customStart {
+                return AMapNaviPoint.location(withLatitude: CGFloat(s.lat), longitude: CGFloat(s.lng))
+            }
+            if let me = me {
+                return AMapNaviPoint.location(withLatitude: CGFloat(me.lat), longitude: CGFloat(me.lng))
+            }
+            return nil
+        }()
         let ok: Bool
-        if let me = me, let start = AMapNaviPoint.location(withLatitude: CGFloat(me.lat), longitude: CGFloat(me.lng)) {
+        if let start = startPoint {
             ok = manager.calculateDriveRoute(withStart: [start], end: [end], wayPoints: wps, drivingStrategy: strategy)
         } else {
             ok = manager.calculateDriveRoute(withEnd: [end], wayPoints: wps, drivingStrategy: strategy)
@@ -338,6 +543,8 @@ final class NaviBridge: NSObject, ObservableObject {
             MapFeeder.shared.prepareRoute(key: "selected-\(routeID)", coords: o.coords.map { (lat: $0.latitude, lng: $0.longitude) })
         }
         checkShareMatch()
+        refreshTrafficSegs()          // 切换方案后刷新该路线的路况着色
+        refreshRoadBrief(pickedID: routeID)   // 换方案后重算「避开 / 改走」线路
     }
 
     static func distText(_ m: Int) -> String { m >= 1000 ? String(format: "%.1f 公里", Double(m) / 1000) : "\(m) 米" }
@@ -383,7 +590,7 @@ final class NaviBridge: NSObject, ObservableObject {
         ShareGuide.shared.start(shareRoute, avoidHighway: Settings.shared.avoidHighway, emulate: emulate,
                                 myLat: me?.lat ?? .nan, myLng: me?.lng ?? .nan)          // 偏航跟随原路线 + 圆屏原路线细线
         emulating = emulate; emuPaused = false
-        if emulate { emuSpeed = NavigationSpeed.values.contains(preferredSimulationSpeed) ? preferredSimulationSpeed : 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
+        if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
         let ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi()
         if ok && arrival.acceptsGuidance(token) {
             if !emulate { RideRecorder.shared.start("导航"); LocationService.shared.setPrecise(true) }
@@ -1004,7 +1211,27 @@ extension NaviBridge {
         }
         routeOptions = opts
         info = opts.count > 1 ? "规划好了 \(opts.count) 条路线，点卡片选一条" : "路线规划好了"
+        // AMapNaviRoute.restrictionInfo 才是限行是否真的生效的证据；不再凭开关就宣称「已避开」
+        let picked = opts.first?.id ?? manager.naviRouteID
+        if let route = routes[NSNumber(value: picked)] ?? manager.naviRoute,
+           let ri = route.restrictionInfo {
+            restrictionType = ri.titleType
+            restrictionTitle = ri.title ?? ""
+        } else {
+            restrictionType = -1
+            restrictionTitle = ""
+        }
+        if Settings.shared.restrictionActive {
+            info += " · " + restrictionSummary
+        }
         if let f = opts.first { select(routeID: f.id) }
+        // 与备选方案对比，得出本方案避开 / 改走的具体道路（来自 AMapNaviLink.roadName）
+        refreshRoadBrief(routes, pickedID: selectedRouteID >= 0 ? selectedRouteID : manager.naviRouteID)
+        // 算路成功后取一次路况；部分 SDK 版本光柱稍晚才填充，0.6s 后补读一次
+        refreshTrafficSegs()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.refreshTrafficSegs()
+        }
     }
 
     @objc(driveManager:onCalculateRouteFailure:)
@@ -1182,5 +1409,6 @@ extension NaviBridge {
     @objc(driveManager:updateTrafficStatus:)
     func mnTraffic(_ m: AMapNaviDriveManager, status: [AMapNaviTrafficStatus]?) {
         if navigating { pushTraffic(status) }
+        refreshTrafficSegs(status)    // 路况光柱同步给首页路线折线着色
     }
 }

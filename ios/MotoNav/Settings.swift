@@ -51,12 +51,9 @@ final class Settings: ObservableObject {
     @Published var theme: Int {
         didSet {
             ud.set(theme, forKey: "map_theme")
-            BleLink.shared.send(MapStyleTransfer.command(theme))
+            BleLink.shared.send("#t,\(theme)")
             // 卫星图和普通地图的数据不一样：切换时重新下载
-            if oldValue != theme {
-                MapSampleReport.shared.failIfWaiting("风格已切换，请重新生成对照图。")
-                MapFeeder.shared.resetChunk()
-            }
+            if oldValue != theme { MapFeeder.shared.resetChunk() }
         }
     }
     // iOS v0.2 小地图
@@ -114,6 +111,125 @@ final class Settings: ObservableObject {
     @Published private(set) var paletteNight = false
     /// 规划路线时不走高速（摩托车默认打开）
     @Published var avoidHighway: Bool { didSet { ud.set(avoidHighway, forKey: "avoid_hw") } }
+
+    // MARK: - 车牌与限行
+
+    /// 高德 AMapNaviVehicleInfo.type：0 燃油客车 / 2 纯电动客车 / 4 插电式混动客车
+    struct VehicleType: Identifiable {
+        let code: Int
+        let name: String
+        var id: Int { code }
+    }
+    static let vehicleTypes: [VehicleType] = [
+        VehicleType(code: 0, name: "燃油客车"),
+        VehicleType(code: 2, name: "纯电客车"),
+        VehicleType(code: 4, name: "插混客车")
+    ]
+
+    /// 苹果地图式「我的车辆」：可保存多台车，选中的那台用于限行判断
+    struct Vehicle: Identifiable, Codable, Equatable {
+        var id: String
+        var name: String
+        var plate: String
+        var type: Int
+        init(id: String = UUID().uuidString, name: String = "", plate: String = "", type: Int = 0) {
+            self.id = id
+            self.name = name
+            self.plate = plate
+            self.type = type
+        }
+    }
+    static func vehicleTypeName(_ code: Int) -> String {
+        vehicleTypes.first { $0.code == code }?.name ?? "燃油客车"
+    }
+    /// 民用车牌的省份简称（设置页里点一下就能换省份，不用切中文键盘）
+    static let plateProvinces: [String] = "京津冀晋蒙辽吉黑沪苏浙皖闽赣鲁豫鄂湘粤桂琼渝川贵云藏陕甘青宁新".map { String($0) }
+
+    /// 车牌清洗：去掉空格、标点，字母统一大写（"京a·12345" → "京A12345"）
+    static func normalizedPlate(_ raw: String) -> String {
+        String(raw.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(9))
+    }
+    /// 普通车牌 7 位、新能源 8 位：省份简称 + 发牌机关字母 + 5/6 位序号
+    static func plateValid(_ p: String) -> Bool {
+        guard p.count == 7 || p.count == 8 else { return false }
+        let cs = Array(p)
+        guard plateProvinces.contains(String(cs[0])) else { return false }
+        guard let s = cs[1].unicodeScalars.first, (65...90).contains(Int(s.value)) else { return false }
+        return cs.dropFirst(2).allSatisfy { $0.isLetter || $0.isNumber }
+    }
+
+    @Published var plateNumber: String { didSet { ud.set(plateNumber, forKey: "vehicle_plate") } }
+    @Published var avoidRestriction: Bool { didSet { ud.set(avoidRestriction, forKey: "avoid_restriction") } }
+    @Published var vehicleType: Int { didSet { ud.set(vehicleType, forKey: "vehicle_type") } }
+
+    // MARK: - 多车辆 + 界面深浅
+
+    @Published var savedVehicles: [Vehicle] { didSet { persistVehicles() } }
+    @Published var activeVehicleID: String { didSet { ud.set(activeVehicleID, forKey: "vehicle_active") } }
+    /// 界面外观：0 自动（日出日落）/ 1 浅色 / 2 深色，默认 0
+    @Published var uiAppearance: Int { didSet { ud.set(uiAppearance, forKey: "ui_appearance"); applyUITheme() } }
+    @Published private(set) var uiLight = false
+
+    func persistVehicles() {
+        if let d = try? JSONEncoder().encode(savedVehicles) { ud.set(d, forKey: "vehicle_list") }
+    }
+    func upsertVehicle(_ v: Vehicle) {
+        if let i = savedVehicles.firstIndex(where: { $0.id == v.id }) { savedVehicles[i] = v }
+        else { savedVehicles.append(v) }
+    }
+    func removeVehicle(id: String) {
+        savedVehicles.removeAll { $0.id == id }
+        if activeVehicleID == id { activeVehicleID = "" }
+    }
+    func selectVehicle(_ v: Vehicle) {
+        plateNumber = v.plate
+        vehicleType = v.type
+        activeVehicleID = v.id
+        applyVehicleSettings()
+    }
+    /// 自动模式直接取 NOAA 日出日落结果，不受「圆屏夜间配色」的手动档位影响。
+    /// applyDayNight() 每分钟检查一次并把它算好的 daylight 传进来。
+    func applyUITheme(daylight: Bool? = nil) {
+        let day: Bool
+        if let d = daylight {
+            day = d
+        } else {
+            // 这里刻意只碰 LocationService，避免 Settings 单例初始化时反向触发 NaviBridge 单例
+            let loc = LocationService.shared.location
+            day = SunTimes.isDaytime(lat: loc?.coordinate.latitude, lng: loc?.coordinate.longitude).day
+        }
+        let light: Bool
+        switch uiAppearance {
+        case 1: light = true
+        case 2: light = false
+        default: light = day
+        }
+        if uiLight != light { uiLight = light }
+    }
+    var uiAppearanceNote: String {
+        switch uiAppearance {
+        case 1: return "一直使用浅色玻璃"
+        case 2: return "一直使用深色玻璃"
+        default: return "按当地日出 / 日落自动在浅色与深色之间切换（\(nightDesc)）"
+        }
+    }
+
+    /// 真正交给高德的车牌（已清洗）
+    var plateInUse: String { Settings.normalizedPlate(plateNumber) }
+    /// 限行规避现在是否生效
+    var restrictionActive: Bool { avoidRestriction && Settings.plateValid(plateInUse) }
+    /// 界面上一句话显示当前状态
+    var plateSummary: String {
+        guard Settings.plateValid(plateInUse) else { return "未设置车牌" }
+        let n = savedVehicles.first { $0.id == activeVehicleID }?.name ?? ""
+        let head = n.isEmpty ? plateInUse : "\(n) · \(plateInUse)"
+        return avoidRestriction ? head + " · 避开限行" : head + " · 未开启"
+    }
+    /// 车牌 / 车型 / 开关改完调用：更新高德车辆信息，已经算过路线就重算一次
+    func applyVehicleSettings() {
+        NaviBridge.shared.applyVehicleInfo()
+        NaviBridge.shared.replanIfNeeded()
+    }
     @Published var curve: Bool { didSet { ud.set(curve, forKey: "map_curve"); BleLink.shared.send(curve ? "#Q,1" : "#Q,0") } }
     @Published var duck: Bool { didSet { ud.set(duck, forKey: "voice_duck") } }
     /// iOS v0.6 导航播报静音（导航画面上的按钮，下次还记得）
@@ -173,6 +289,17 @@ final class Settings: ObservableObject {
         if let m = ud.object(forKey: "night_mode") as? Int { nightMode = m }
         else { nightMode = ud.bool(forKey: "night") ? 2 : 0 }       // 老版本的“夜间配色”开关：开 = 一直夜间
         avoidHighway = ud.object(forKey: "avoid_hw") as? Bool ?? true
+        plateNumber = ud.string(forKey: "vehicle_plate") ?? ""
+        avoidRestriction = ud.object(forKey: "avoid_restriction") as? Bool ?? true
+        vehicleType = ud.object(forKey: "vehicle_type") as? Int ?? 0
+        uiAppearance = ud.object(forKey: "ui_appearance") as? Int ?? 0
+        activeVehicleID = ud.string(forKey: "vehicle_active") ?? ""
+        if let d = ud.data(forKey: "vehicle_list"),
+           let arr = try? JSONDecoder().decode([Vehicle].self, from: d) {
+            savedVehicles = arr
+        } else {
+            savedVehicles = []
+        }
         curve = ud.bool(forKey: "map_curve")
         duck = ud.object(forKey: "voice_duck") as? Bool ?? true
         voiceMuted = ud.bool(forKey: "nav_muted")
@@ -180,6 +307,15 @@ final class Settings: ObservableObject {
         mapSource = MapDefaults.source(ud)
         trail = ud.object(forKey: "map_trail") as? Int ?? 1
         clean = ud.bool(forKey: "clean_mode")
+        // 所有存储属性都初始化完以后，才能访问带 didSet 的 @Published 属性或调用实例方法；
+        // 否则 Swift 会报 'self' used ... before all stored properties are initialized。
+        if savedVehicles.isEmpty, !plateNumber.isEmpty {
+            let legacy = Vehicle(name: "我的车", plate: Settings.normalizedPlate(plateNumber), type: vehicleType)
+            savedVehicles = [legacy]
+            activeVehicleID = legacy.id
+        }
+        persistVehicles()
+        applyUITheme()
     }
 
     private var brightTimer: Timer?
@@ -197,17 +333,13 @@ final class Settings: ObservableObject {
     }
 
     /// 连上圆屏时把所有设置发一遍
-    func syncBuildingContinuity() {
-        BleLink.shared.send(theme==1 && buildings && mapOn && mapSource==MapFeeder.SRC_AMAP ? "#BC,1":"#BC,0")
-    }
     func pushAll() {
         let b = BleLink.shared
         syncBootBrand()
         MusicBridge.shared.syncMode()
         MusicBridge.shared.refresh(force: true)
         applyDayNight(force: true)                      // 亮度、夜间配色
-        b.send(MapStyleTransfer.command(theme))
-        syncBuildingContinuity()
+        b.send("#t,\(theme)")
         b.send(rotationMsg)
         b.send(curve ? "#Q,1" : "#Q,0")
         b.send(mapOn ? "#m,1" : "#m,0")
@@ -222,12 +354,30 @@ final class Settings: ObservableObject {
 
     private var nightSent = -1
     private var dayNightTimer: Timer?
+    private var catchupTicks = 0
 
     /// App 启动时调用一次
     func startDayNight() {
         dayNightTimer?.invalidate()
-        dayNightTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.applyDayNight() }
+        // 先立刻算一次：界面外观 / 地图配色的「自动」模式启动即生效，不用等第一个周期
         applyDayNight()
+        // 冷启动这一刻通常还没有经纬度，SunTimes 会先按兜底的 6:30~18:30 计算，
+        // 于是「自动」要等 60s 后第一个周期拿到定位才切到正确配色（用户感知约 1 分钟延迟）。
+        // 前 1 分钟改用 5s 短周期「追赶定位」：拿到真实位置立刻按当地日出日落重算，
+        // 之后切回 60s 常规周期。纯本地计算，只有值变化才会发蓝牙指令，长期不增加耗电。
+        catchupTicks = 0
+        dayNightTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let s = self else { return }
+            s.applyDayNight()
+            s.catchupTicks += 1
+            let hasFix = (NaviBridge.shared.lastLocation ?? LocationService.shared.location) != nil
+            if hasFix || s.catchupTicks >= 12 {
+                s.dayNightTimer?.invalidate()
+                s.dayNightTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                    self?.applyDayNight()
+                }
+            }
+        }
     }
 
     /// 算出现在是白天还是夜间：夜间配色、亮度变了就告诉圆屏
@@ -255,6 +405,7 @@ final class Settings: ObservableObject {
             brightSent = lv
             BleLink.shared.send("#b,\(lv)")
         }
+        applyUITheme(daylight: r.day)       // 界面深浅在自动模式下跟着日出日落变
     }
 }
 
