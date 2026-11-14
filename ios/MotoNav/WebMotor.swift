@@ -3,8 +3,9 @@ import WebKit
 import CoreLocation
 import ObjectiveC
 
-struct MotorPoint { let lat: Double; let lng: Double; var name = ""; var id = "" }
-struct MotorRequest {
+// Codable so SavedMotorPlan can persist only the user-selected planning inputs.
+struct MotorPoint: Codable { let lat: Double; let lng: Double; var name = ""; var id = "" }
+struct MotorRequest: Codable {
     var start: MotorPoint; let end: MotorPoint; var vias: [MotorPoint] = []; var bicycle = false
     var page: URL {
         var c = URLComponents(string: "https://www.amap.com/ssr/dir")!
@@ -23,7 +24,7 @@ struct MotorRequest {
             guard let la = lat, let lo = lng, valid(la, lo) else { throw AmapShare.Fail("网页缺少有效起终点坐标") }
             return MotorPoint(lat: la, lng: lo, name: q["\(long)[name]"] ?? q["\(prefix)name"] ?? "", id: q["\(long)[id]"] ?? q["\(prefix)id"] ?? "")
         }
-        var vias: [MotorPoint] = []; var bicycle = false
+        var vias: [MotorPoint] = []
         let lat = (q["vlat"] ?? "").split(separator: "|"), lng = (q["vlon"] ?? "").split(separator: "|")
         guard lat.count == lng.count, lat.count <= 16 else { throw AmapShare.Fail("途经点格式错误") }
         if !lat.isEmpty {
@@ -46,10 +47,12 @@ struct MotorStep { let instruction: String; let road: String; let action: String
 }
 struct MotorRoute: Identifiable {
     let id = UUID(); let request: MotorRequest; let points: [MotorPoint]; let steps: [MotorStep]; let seconds: Int
+    /// True when the steps carry real per-step geometry and turn instructions; false for a shape-only fallback.
+    let detailedGuidance: Bool
     private let cumulative: [Double]
     private let coordinates: [(lat:Double,lng:Double)]
-    init(request: MotorRequest, points: [MotorPoint], steps: [MotorStep], seconds: Int) {
-        self.request=request;self.points=points;self.steps=steps;self.seconds=seconds
+    init(request: MotorRequest, points: [MotorPoint], steps: [MotorStep], seconds: Int, detailedGuidance: Bool = true) {
+        self.request=request;self.points=points;self.steps=steps;self.seconds=seconds;self.detailedGuidance=detailedGuidance
         cumulative=RouteShape(points:points).cum
         coordinates=points.map{($0.lat,$0.lng)}
     }
