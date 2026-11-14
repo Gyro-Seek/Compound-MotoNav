@@ -183,11 +183,16 @@ final class WebMotorSession: ObservableObject {
     @Published var turnDirection = "S"
     @Published var remainingSeconds = 0
     private var watchdog: Timer?
+    private var reroutePolicy = MotorReroutePolicy()
+    private var rerouteWatchdog: DispatchWorkItem?
+    private var rerouteStatusHeld = false
     func start(_ route: MotorRoute, simulate: Bool) {
         guard route.points.count>=2,!route.steps.isEmpty,!NaviBridge.shared.navigating,
               (route.cum.last ?? 0)>=3,(route.cum.last ?? 0)<=5_000_000,
               route.steps.allSatisfy({route.points.indices.contains($0.end)}) else { return }
         stop(); NaviBridge.shared.stop(); NaviBridge.shared.stopCruise()
+        // A new journey owns a fresh lease: no inherited backoff or stale failure banner.
+        reroutePolicy.reset(); rerouteStatusHeld = false; lastReplan = Date.distantPast
         self.route = route; cum = route.cum; progress = 0; stepIndex = 0; simulation = simulate; paused = false; arrived = false; running = true
         tracker=MotorRouteTracker(route.points);confirmedArrival=false;metadataSuspended=false;simulationTick=nil;realHeading=nil
         speed = 60; offCount = 0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
@@ -225,6 +230,7 @@ final class WebMotorSession: ObservableObject {
     func stop(sendCancel:Bool=true) {
         token = UUID(); timer?.invalidate(); timer = nil
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
+        rerouteWatchdog?.cancel(); rerouteWatchdog = nil; reroutePolicy.reset()
         if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
         running = false; rerouting = false; UIApplication.shared.isIdleTimerDisabled = false
     }
@@ -250,31 +256,68 @@ final class WebMotorSession: ObservableObject {
         if match.offset <= 60 { progress = max(progress,match.progress); offCount = 0 }
         else { offCount += 1 }
         if !rerouting {
-            status=match.offset>60 ? "已偏离路线 · 距路线 \(Int(match.offset)) 米" : "\(route?.request.bicycle == true ? "自行车" : "摩托车")导航 · 定位精度 \(Int(l.horizontalAccuracy)) 米"
+            // A failed recalculation stays visible until a new journey starts.
+            if !rerouteStatusHeld {
+                status=match.offset>60 ? "已偏离路线 · 距路线 \(Int(match.offset)) 米" : "\(route?.request.bicycle == true ? "自行车" : "摩托车")导航 · 定位精度 \(Int(l.horizontalAccuracy)) 米"
+            }
             if match.offset<=60,metadataSuspended,let r=route {metadataSuspended=false;WebRouteMetadata.shared.load(r)}
         }
         while nextVia < viaProgress.count && progress > viaProgress[nextVia]+40 { nextVia += 1 }
         render(point,off: match.offset)
-        if offCount >= 3, !rerouting, Date().timeIntervalSince(lastReplan) > 20 { replan(point) }
+        let now = ProcessInfo.processInfo.systemUptime
+        if Date().timeIntervalSince(lastReplan) > 20,
+           reroutePolicy.observe(offset: match.offset, accuracy: l.horizontalAccuracy, now: now) { replan(point) }
     }
     private func replan(_ point: MotorPoint) {
-        guard let route = route else { return }
-        rerouting = true; lastReplan = Date(); status = "偏航，正在重新规划\(route.request.bicycle ? "自行车" : "摩托车")路线…"; let generation = token
+        guard running, !rerouting, let route = route,
+              let lease = reroutePolicy.begin(now: ProcessInfo.processInfo.systemUptime) else { return }
+        let generation = token
+        let request = MotorRequest(start: point, end: route.request.end,
+                                   vias: Array(route.request.vias.dropFirst(nextVia)),
+                                   bicycle: route.request.bicycle)
+        rerouting = true; lastReplan = Date(); rerouteStatusHeld = false
+        status = "偏航，正在重新规划\(route.request.bicycle ? "自行车" : "摩托车")路线…"
         WebRouteMetadata.shared.stop();metadataSuspended=true;BleLink.shared.send("#y,1")
-        var request = route.request; request.start = point; request.vias = Array(request.vias.dropFirst(nextVia))
+        // Bounded lease: a suspended response must not keep the small screen in rerouting forever.
+        rerouteWatchdog?.cancel()
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self = self, self.running, self.token == generation,
+                  self.reroutePolicy.pending == lease else { return }
+            self.finishReroute(lease: lease, success: false, status: "重算失败，保留原路线：路线重算超时")
+            self.rerouting = false; BleLink.shared.send("#y,0")
+        }
+        rerouteWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + MotorReroutePolicy.requestTimeout, execute: watchdog)
         Task { @MainActor in
+            // Post-stop guard: a queued calculation must not start its network operation after stop().
+            guard self.running, self.token == generation, self.reroutePolicy.pending == lease else { return }
             do {
                 let routes = try await MotorRoutes.load(request)
-                guard running, token == generation, let new = routes.first else { return }
-                self.route = new; cum = new.cum; progress = 0; stepIndex = 0; offCount = 0; nextVia = 0
-                tracker=MotorRouteTracker(new.points);confirmedArrival=false;lastFix=nil;previousFix=nil;metadataSuspended=false
-                // Via coordinates may lie far ahead; search the entire new route for each one.
-                viaProgress = new.request.vias.map { v in nearestAlong(v) }
-                MapFeeder.shared.prepareRoute(key: new.id.uuidString,coords: new.coords); status = "路线已重新规划"
-                WebRouteMetadata.shared.load(new)
-            } catch { if token == generation { status = "重算失败，保留原路线：\(error.localizedDescription)" } }
-            if token == generation { rerouting = false;BleLink.shared.send("#y,0") }
+                guard self.running, self.token == generation, self.reroutePolicy.pending == lease else { return }
+                if let new = routes.first, new.points.count >= 2, !new.steps.isEmpty {
+                    self.route = new; cum = new.cum; progress = 0; stepIndex = 0; offCount = 0; nextVia = 0
+                    tracker=MotorRouteTracker(new.points);confirmedArrival=false;lastFix=nil;previousFix=nil;metadataSuspended=false
+                    // Via coordinates may lie far ahead; search the entire new route for each one.
+                    viaProgress = new.request.vias.map { v in nearestAlong(v) }
+                    MapFeeder.shared.prepareRoute(key: new.id.uuidString,coords: new.coords)
+                    WebRouteMetadata.shared.load(new)
+                    self.finishReroute(lease: lease, success: true, status: "路线已重新规划")
+                } else {
+                    self.finishReroute(lease: lease, success: false, status: "重算失败，保留原路线：高德未返回可用路线")
+                }
+            } catch {
+                guard self.running, self.token == generation, self.reroutePolicy.pending == lease else { return }
+                self.finishReroute(lease: lease, success: false, status: "重算失败，保留原路线：\(error.localizedDescription)")
+            }
+            if self.token == generation { rerouting = false;BleLink.shared.send("#y,0") }
         }
+    }
+    private func finishReroute(lease: UUID, success: Bool, status: String) {
+        rerouteWatchdog?.cancel(); rerouteWatchdog = nil
+        // Releasing the lease also invalidates any late response from a timed-out request.
+        _ = reroutePolicy.finish(lease, now: ProcessInfo.processInfo.systemUptime, success: success)
+        self.status = status
+        rerouteStatusHeld = !success
     }
     private func nearestAlong(_ p: MotorPoint) -> Double {
         guard let route = route else { return 0 }
