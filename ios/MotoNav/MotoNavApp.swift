@@ -6,6 +6,21 @@ import SwiftUI
 /// SwiftUI 默认的 AppDelegate 没有 window，会直接崩溃（iOS v0.1.1 点“开始导航”就闪退的原因），
 /// 所以这里补一个 AppDelegate，window 返回当前显示的窗口。
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// 分享正文可能比界面先到：先暂存，ContentView 在 onAppear／回到前台时由
+    /// flushPendingShare() 补消费；同时发一条通知，界面已经起来时立刻处理。
+    /// 通知的 object 就是分享正文（ContentView 只接受 String）。
+    static let shareNotification = Notification.Name("motonav.share.received")
+    /// 只在主线程读写（通知回调 / SwiftUI 事件），用 nonisolated(unsafe) 显式声明，
+    /// 避免 Swift 6 严格并发模式把这段全局可变状态判为 error。
+    nonisolated(unsafe) static var pendingShareText: String?
+
+    static func receiveShare(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        pendingShareText = t
+        NotificationCenter.default.post(name: shareNotification, object: t)
+    }
+
     var window: UIWindow? {
         get {
             let wins = UIApplication.shared.connectedScenes
@@ -65,6 +80,32 @@ struct MotoNavApp: App {
                     BleLink.shared.syncPhoneClock(force:true)
                     MusicBridge.shared.pollMetadata(force:true)
                 }
+        }
+    }
+}
+
+// MARK: - 面向用户的状态文案
+//
+// 放在这里而不是 ContentView.swift：ContentView.swift 有三千多行，改动它容易和
+// 界面代码冲突；本文件一定参与编译，extension 在同模块内即可被其它界面文件调用。
+extension ContentView {
+    /// `SearchService.status` 等状态本来就是给用户看的中文提示，主界面直接
+    /// `Text(search.status)`。这里统一做去空白 + 少量英文/内部状态码的兜底翻译，
+    /// 供弹层（RouteWaypointEditor 等）复用，保证两处显示一致，不把内部术语抛给用户。
+    static func userMessage(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return "" }
+        switch t.lowercased() {
+        case "loading", "searching", "pending":
+            return "搜索中…"
+        case "not found", "no result", "no results", "empty":
+            return "没找到，换个说法试试"
+        case "unauthorized", "invalid key", "forbidden":
+            return "高德 key 无效，到「Key 设置」重新填一个"
+        case "network error", "offline", "timeout", "timed out":
+            return "网络不给力，稍后再试"
+        default:
+            return t
         }
     }
 }
