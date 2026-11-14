@@ -589,3 +589,131 @@ final class ShareGuide {
         if ourCalc { NaviBridge.shared.setRerouting(true) }       // 圆屏继续显示“重新规划中”
     }
 }
+
+// MARK: - 地点分享解析
+
+/// 分享进来的「地点」文本解析（区别于 AmapShare 的整条路线还原）。
+/// 纯本地解析、不发网络请求，可在后台队列调用；输出坐标统一为高德 GCJ-02，
+/// 与 SearchService.Place / 高德 SDK 使用的坐标系一致。
+enum SharePlace {
+    struct Place {
+        let name: String
+        let source: String
+        let lat: Double
+        let lng: Double
+    }
+
+    enum Resolution {
+        case place(Place)
+        case needSearch(String)
+        case none
+    }
+
+    /// 去掉分享文案的引导语与首尾空白；结果用于去重和解析，重复调用结果不变。
+    static func strip(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["【高德地图】", "【百度地图】", "【腾讯地图】", "【苹果地图】",
+                        "我在高德地图发现了", "我在这里：", "分享自高德地图：", "来自高德地图：", "来自苹果地图："]
+        for p in prefixes where t.hasPrefix(p) {
+            t = String(t.dropFirst(p.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            break
+        }
+        return t
+    }
+
+    /// 依次尝试：地图链接参数 → 文本里的经纬度 → 纯地名。
+    static func resolve(_ text: String) -> Resolution {
+        let t = strip(text)
+        guard !t.isEmpty else { return .none }
+
+        if let url = firstURL(t), let c = URLComponents(string: url) {
+            let host = (c.host ?? "").lowercased()
+            var q: [String: String] = [:]
+            for item in c.queryItems ?? [] {
+                let v = item.value?.removingPercentEncoding ?? item.value ?? ""
+                q[item.name.lowercased()] = v
+            }
+            if host.contains("amap.com") {
+                // uri.amap.com/marker?position=经度,纬度&name=地点（高德坐标，无需转换）
+                if let p = q["position"], let c = pair(p, lngFirst: true) {
+                    let name = cleaned(q["name"] ?? q["keywords"] ?? q["q"] ?? "")
+                    return .place(Place(name: name.isEmpty ? "高德分享的地点" : name,
+                                        source: "高德地图", lat: c.lat, lng: c.lng))
+                }
+                let name = cleaned(q["name"] ?? q["keywords"] ?? q["q"] ?? "")
+                if !name.isEmpty { return .needSearch(name) }
+            } else if host.contains("apple.com") || host.contains("google.") || host.contains("goo.gl") || host.contains("bing.com") {
+                // Apple / Google / Bing 用 WGS-84：ll / q / query / cp 里的「纬度,经度」要转成高德坐标
+                let raw = q["ll"] ?? q["q"] ?? q["query"] ?? q["cp"] ?? ""
+                if let c = pair(raw, lngFirst: false) {
+                    let g = MapGeo.wgsToGcj(c.lat, c.lng)
+                    let name = cleaned(q["q"] ?? q["name"] ?? "")
+                    return .place(Place(name: name.isEmpty ? "分享的地点" : name,
+                                        source: host.contains("apple") ? "苹果地图" : "地图链接",
+                                        lat: g.lat, lng: g.lng))
+                }
+                let name = cleaned(q["q"] ?? q["query"] ?? "")
+                if !name.isEmpty, !looksNumeric(name) { return .needSearch(name) }
+            }
+        }
+
+        if let c = coordinateIn(t) {
+            return .place(Place(name: nameFromText(t), source: "分享内容", lat: c.lat, lng: c.lng))
+        }
+        let name = nameFromText(t)
+        return name.isEmpty ? .none : .needSearch(name)
+    }
+
+    // MARK: - 内部工具
+
+    private static func cleaned(_ s: String) -> String {
+        String(s.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+    }
+
+    private static func looksNumeric(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty || t.rangeOfCharacter(from: .letters) == nil
+    }
+
+    private static func firstURL(_ s: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: #"https?://[^\s，。、"'<>）)]+"#) else { return nil }
+        let ns = s as NSString
+        guard let m = re.firstMatch(in: s, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return ns.substring(with: m.range)
+    }
+
+    /// "a,b" → (纬度, 经度)；lngFirst=true 时按「经度,纬度」读（高德 position）。
+    private static func pair(_ s: String, lngFirst: Bool) -> (lat: Double, lng: Double)? {
+        let p = s.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard p.count >= 2, let a = Double(p[0]), let b = Double(p[1]) else { return nil }
+        let lat = lngFirst ? b : a, lng = lngFirst ? a : b
+        guard (-90...90).contains(lat), (-180...180).contains(lng), lat != 0 || lng != 0 else { return nil }
+        return (lat, lng)
+    }
+
+    /// 从任意文本里找一对经纬度，按中国范围自动判断「纬度,经度」还是「经度,纬度」。
+    private static func coordinateIn(_ s: String) -> (lat: Double, lng: Double)? {
+        guard let re = try? NSRegularExpression(pattern: #"(-?\d{1,3}(?:\.\d+)?)\s*[,，]\s*(-?\d{1,3}(?:\.\d+)?)"#) else { return nil }
+        let ns = s as NSString
+        for m in re.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
+            guard let a = Double(ns.substring(with: m.range(at: 1))),
+                  let b = Double(ns.substring(with: m.range(at: 2))) else { continue }
+            if (3...54).contains(a), (73...135).contains(b) { return (a, b) }
+            if (73...135).contains(a), (3...54).contains(b) { return (b, a) }
+            if (-90...90).contains(a), (-180...180).contains(b) { return (a, b) }
+        }
+        return nil
+    }
+
+    /// 去掉链接后，取第一段像地名的文字。
+    private static func nameFromText(_ s: String) -> String {
+        var t = s
+        if let u = firstURL(t) { t = t.replacingOccurrences(of: u, with: " ") }
+        for line in t.components(separatedBy: .newlines) {
+            let v = line.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "【】[]()（）:：,，。.、!！ "))
+            if !v.isEmpty, !looksNumeric(v), v.count <= 60 { return v }
+        }
+        return ""
+    }
+}

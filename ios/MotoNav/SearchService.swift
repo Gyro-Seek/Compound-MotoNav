@@ -23,6 +23,7 @@ final class SearchService: NSObject, ObservableObject {
     private var api: AMapSearchAPI?
     private var cache: [String: [Place]] = [:]         // 关键词 → 结果（只存在内存里）
     private var geoDone: ((String) -> Void)?            // 点按地图 POI 后的逆地理编码回调
+    private var cacheable = true                         // 带参考点的「附近」搜索结果不写进关键词缓存
 
     override init() {
         super.init()
@@ -39,23 +40,34 @@ final class SearchService: NSObject, ObservableObject {
         cache = [:]
     }
 
-    /// 按了“搜索”时调用（每按一次最多查一次高德）
-    func search(_ text: String) {
+    /// 按了“搜索”时调用（每按一次最多查一次高德）。
+    /// near 是参考点（纬度, 经度，已经是高德 GCJ-02 坐标，例如路线上的途经点），
+    /// 用于「选途经点」时优先显示附近结果；不传时退回用手机当前位置。
+    /// 带参考点的搜索不走关键词缓存：不同路线附近的命中结果不一样。
+    func search(_ text: String, near: (Double, Double)? = nil) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { clear(); return }
-        if let r = cache[t] {                           // 查过的不再花额度
+        cacheable = near == nil
+        if cacheable, let r = cache[t] {                // 查过的不再花额度
             results = r
             status = r.isEmpty ? "没找到，换个说法试试" : ""
             return
         }
         let req = AMapInputTipsSearchRequest()
         req.keywords = t
-        if let loc = LocationService.shared.location {
+        if let n = near {                               // 高德坐标按「经度,纬度」传
+            req.location = String(format: "%.6f,%.6f", n.1, n.0)
+        } else if let loc = LocationService.shared.location {
             let g = MapGeo.wgsToGcj(loc.coordinate.latitude, loc.coordinate.longitude)   // 高德要高德坐标
             req.location = String(format: "%.6f,%.6f", g.lng, g.lat)                   // 附近优先
         }
         status = "搜索中…"
         api?.aMapInputTipsSearch(req)
+    }
+
+    /// 「搜索附近加油站」：等价于以参考点搜索「加油站」。
+    func searchFuel(near: (Double, Double)? = nil) {
+        search("加油站", near: near)
     }
 
     func clear() { results = []; status = "" }
@@ -86,7 +98,7 @@ final class SearchService: NSObject, ObservableObject {
             return Place(name: tip.name ?? "", address: (tip.district ?? "") + (tip.address ?? ""),
                          lat: Double(p.latitude), lng: Double(p.longitude))
         }
-        if let k = request?.keywords { cache[k] = results }
+        if cacheable, let k = request?.keywords { cache[k] = results }
         status = results.isEmpty ? "没找到，换个说法试试" : ""
     }
 

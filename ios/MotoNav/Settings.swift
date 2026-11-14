@@ -68,6 +68,14 @@ final class Settings: ObservableObject {
     @Published var buildings: Bool = MapDefaults.buildings() {
         didSet { ud.set(buildings, forKey: "map_buildings"); MapFeeder.shared.resetChunk() }
     }
+    /// 建筑连续性：只有「默认风格 + 高德底图 + 打开建筑图层 + 圆屏支持建筑」时，
+    /// 固件才在切换地图块时沿用上一块的建筑屋顶（#BC,1），否则明确关掉（#BC,0）。
+    /// MapFeeder.resetChunk() 在主题／底图／建筑设置或设备能力变化后调用；
+    /// #BC 也在 BleLink 的清屏保留列表里，重连后会按最后一次状态补发。
+    func syncBuildingContinuity() {
+        let on = buildings && theme == 1 && mapSource == MapFeeder.SRC_AMAP && BleLink.shared.buildingsSupported
+        BleLink.shared.send(on ? "#BC,1" : "#BC,0")
+    }
     @Published private(set) var mapSource: Int { didSet { ud.set(mapSource, forKey: "map_src"); MapFeeder.shared.resetChunk() } }
     /// 走过的路线：1 变灰，2 擦除
     @Published var trail: Int { didSet { ud.set(trail, forKey: "map_trail"); BleLink.shared.send("#r,\(trail)") } }
