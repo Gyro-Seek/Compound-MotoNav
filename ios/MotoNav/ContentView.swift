@@ -1744,7 +1744,7 @@ struct ContentView: View {
                     .font(.caption).foregroundColor(ContentView.sub)
                 if !settings.musicLyrics && ble.mediaLyricsActive { Text("正在关闭圆屏歌词…").font(.caption).foregroundColor(ContentView.sub) }
                 if settings.musicLyrics {
-                    Text(ble.mediaLyricsSupported ? ble.mediaLyricsStatus : "需要圆屏固件 v7.11.0 或更新版")
+                    Text(ble.mediaLyricsStatus.isEmpty ? "歌词将显示在歌手下方，正在等待歌曲信息…" : ble.mediaLyricsStatus)
                         .font(.caption).foregroundColor(ContentView.cyan)
                 }
                 Text("先在网易云或 QQ 音乐开始播放，再用圆屏控制。新固件通过 iPhone AMS 显示歌名、歌手和状态，信息取决于当前播放器提供的内容。HID SENT 表示按键已发送。")

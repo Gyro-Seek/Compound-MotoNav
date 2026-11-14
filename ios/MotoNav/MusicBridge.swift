@@ -24,9 +24,11 @@ final class MusicBridge {
         BleLink.shared.mediaSongInfo = ""
     }
     func syncMode() {
+        // 歌词开关(#ML)独立于 HID 能力：固件未宣告 CAP,HID,1 时也必须下发，
+        // 否则固件 musicLyrics 恒为 false，slot 12 歌词位图会被整帧丢弃。
+        syncLyrics()
         guard BleLink.shared.mediaHIDSupported else { return }
         BleLink.shared.sendOnce(Settings.shared.musicHID ? "#HM,1" : "#HM,0")
-        syncLyrics()
         pollMetadata(force:true)
     }
     func pollMetadata(force:Bool=false) {
@@ -34,7 +36,7 @@ final class MusicBridge {
         if replay.request(now:ProcessInfo.processInfo.systemUptime,needed:metadata.needsReplay,force:force) {BleLink.shared.sendOnce("#AMS?")}
     }
     func syncLyrics(force: Bool = false) {
-        let desired = Settings.shared.musicLyrics && Settings.shared.musicHID
+        let desired = Settings.shared.musicLyrics
         let changed = lyricsSync.desired != desired
         lyricsSync.configure(desired, force: force)
         if !desired { LyricsBridge.shared.stop() }
@@ -60,8 +62,8 @@ final class MusicBridge {
             }
             return
         }
-        LyricsBridge.shared.stop()
         guard MPMediaLibrary.authorizationStatus() == .authorized else {
+            LyricsBridge.shared.stop()
             publish(title: "请在手机授权 Apple Music", artist: "仅支持系统音乐 App", available: false, playing: false, force: force)
             return
         }
@@ -72,6 +74,14 @@ final class MusicBridge {
             NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: player)
         }
         let item = player.nowPlayingItem
+        // 关闭"蓝牙媒体按键"时同样推送歌词，曲目信息来自系统音乐 App。
+        if let item = item {
+            LyricsBridge.shared.updateSystem(title: item.title ?? "", artist: item.artist ?? "",
+                album: item.albumTitle ?? "", duration: item.playbackDuration,
+                elapsed: player.currentPlaybackTime, playing: player.playbackState == .playing)
+        } else {
+            LyricsBridge.shared.stop()
+        }
         publish(title: item?.title ?? "请先在音乐 App 播放歌曲", artist: item?.artist ?? "Apple Music", available: item != nil, playing: player.playbackState == .playing, force: force)
     }
     @objc private func changed() { DispatchQueue.main.async { self.refresh() } }

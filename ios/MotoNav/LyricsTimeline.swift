@@ -5,10 +5,14 @@ struct LyricsTrack: Equatable {
     let duration: Double
     var key: String { "\(title)\n\(artist)\n\(album)\n\(duration)" }
     var url: URL? {
-        guard !title.isEmpty, !artist.isEmpty, duration.isFinite, (1...3600).contains(duration) else { return nil }
-        var url = URLComponents(string: "https://lrclib.net/api/get")!
-        url.queryItems = [URLQueryItem(name: "track_name", value: title), URLQueryItem(name: "artist_name", value: artist), URLQueryItem(name: "duration", value: String(duration))]
-        if !album.isEmpty { url.queryItems?.append(URLQueryItem(name: "album_name", value: album)) }
+        guard !title.isEmpty, !artist.isEmpty else { return nil }
+        // 时长有效走精确查询；网易云/QQ 音乐经 AMS 常不提供时长，改走 /api/search 按歌名+歌手查找，不再直接放弃。
+        let exact = duration.isFinite && (1...3600).contains(duration)
+        var url = URLComponents(string: exact ? "https://lrclib.net/api/get" : "https://lrclib.net/api/search")!
+        var items = [URLQueryItem(name: "track_name", value: title), URLQueryItem(name: "artist_name", value: artist)]
+        if exact { items.append(URLQueryItem(name: "duration", value: String(duration))) }
+        if !album.isEmpty { items.append(URLQueryItem(name: "album_name", value: album)) }
+        url.queryItems = items
         return url.url
     }
     func matches(title: String, artist: String, album: String, duration: Double) -> Bool {
@@ -16,8 +20,12 @@ struct LyricsTrack: Equatable {
             text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
                 .unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
         }
-        return duration.isFinite && abs(self.duration - duration) <= 2.1 && normalized(self.title) == normalized(title)
-            && normalized(self.artist) == normalized(artist)
+        // 时长未知(<=0, 来自 /api/search)时不校验时长；中文歌曲副标题差异常见，标题/歌手允许包含关系。
+        let durationOK = self.duration <= 0 || duration <= 0 || !duration.isFinite || abs(self.duration - duration) <= 3
+        let t = normalized(self.title), a = normalized(self.artist), rt = normalized(title), ra = normalized(artist)
+        guard !rt.isEmpty, !ra.isEmpty else { return false }
+        return durationOK && (t == rt || t.contains(rt) || rt.contains(t))
+            && (a == ra || a.contains(ra) || ra.contains(a))
             && (self.album.isEmpty || album.isEmpty || normalized(self.album) == normalized(album))
     }
 }
