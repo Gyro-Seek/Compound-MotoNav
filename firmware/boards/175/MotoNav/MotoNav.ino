@@ -20,6 +20,7 @@
 #include "src/pages/ArrivalAnimation.h"
 #include "src/pages/IncomingCall.h"
 #include "src/pages/WeatherPage.h"
+#include "src/pages/ClockPage.h"
 #include "src/pages/PageNavigation.h"
 #include "src/map/MapState.h"
 #include "src/map/VectorMapReceiver.h"
@@ -255,6 +256,7 @@ void loop() {
     pairOn = false; pairDone = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -270,6 +272,7 @@ void loop() {
     wasCall = false;
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
+    else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -289,6 +292,7 @@ void loop() {
     if (!callOn && !pairOn) {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
+      else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }
@@ -296,6 +300,7 @@ void loop() {
 
   musicTick();
   weatherTick();                                       // v5.3 天气页
+  clockTick();                                         // iOS 时钟页：每秒走一下秒针
   if (inNav && navDirty && !fxOn && !callOn && !pairOn && page == 0 && !sliding) {
     drawNavFrame();
     navDirty = false;
@@ -324,6 +329,7 @@ void loop() {
   } else if(lightShown && !pairOn && !callOn && !fxOn && !sliding) {
     if(page==2)musicDirty=true;
     else if(page==1)wxDirty=true;
+    else if(page==FixedPageLayout::CLOCK_PAGE)drawClockPage();
     else if(inNav)navDirty=true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
