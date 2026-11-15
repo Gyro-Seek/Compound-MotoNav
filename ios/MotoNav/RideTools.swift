@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import CoreLocation
 
 final class Favorites: ObservableObject {
@@ -16,6 +17,17 @@ final class Favorites: ObservableObject {
         places.insert(Place(name: p.name, address: p.address, lat: p.lat, lng: p.lng), at: 0); save()
     }
     func remove(_ p: Place) { places.removeAll { $0.id == p.id }; save() }
+    /// 设置中心「地点」页按住拖动换序：和主页抽屉共用同一份 places（@Published），
+    /// 顺序一改两处同时刷新；保存回 UserDefaults，重启后顺序不变。
+    func move(from src: IndexSet, to dst: Int) {
+        guard let from = src.first else { return }
+        var arr = places
+        let p = arr.remove(at: from)
+        let to = dst > from ? dst - 1 : dst
+        arr.insert(p, at: min(max(to, 0), arr.count))
+        places = arr
+        save()
+    }
     /// 更改收藏地点的备注（显示名）；坐标不变，改完整体赋值以触发 @Published 刷新
     func rename(_ p: Place, to newName: String) {
         let t = newName.trimmingCharacters(in: .whitespacesAndNewlines)

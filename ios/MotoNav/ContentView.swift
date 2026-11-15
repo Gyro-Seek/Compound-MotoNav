@@ -52,7 +52,7 @@ struct ContentView: View {
     @State private var favEditName = ""
     @State private var stopRows: [NaviBridge.Stop] = []  // 停靠站列表的稳定数据源：拖动时同 id 重排，不整表重建
     @State private var stopReplanWork: DispatchWorkItem? = nil  // 连续拖动去抖：最后一次松手稳定后才算路
-    @State private var drawerDragY: CGFloat = 0         // 抽屉跟手拖动偏移，地图可见区实时跟随
+    @State private var drawerDragY: CGFloat = 0         // 抽屉跟手高度增量：上拉为负→抽屉变高，下拉为正→变矮
     @State private var showMapMenu = false              // 右上角地图模式菜单（自定义窄浮层）
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastHandledShare = ""        // 去重：onOpenURL 和前台自动消费可能同时到
@@ -651,7 +651,7 @@ struct ContentView: View {
     /// 写回并 replan。彻底消除旧版自定义 DragGesture 的抖动、抢手势与「反复正在规划路线…」。
     private var routeStopsCard: some View {
         let stops = stopRows.isEmpty ? routeStops : stopRows
-        let rowH: CGFloat = 52
+        let rowH: CGFloat = 64
         return VStack(spacing: 0) {
             List {
                 ForEach(stops) { s in
@@ -683,6 +683,7 @@ struct ContentView: View {
             .listStyle(.plain)
             .background(ContentView.card)
             .frame(height: max(CGFloat(stops.count) * rowH, rowH))
+            .modifier(NoInnerScroll())          // 内层 List 不吞上滑手势：交给外层 ScrollView
             .onAppear { if stopRows.isEmpty { stopRows = routeStops } }
             Button { openViaSearch() } label: {
                 HStack(spacing: 10) {
@@ -699,7 +700,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 16).fill(ContentView.card.opacity(0.9)))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(ContentView.stroke, lineWidth: 1))
+        // 不再描一圈独立边框：避免看起来像「一个可以单独滚动的框」，和抽屉内容融为一体
     }
 
     /// 由 NaviBridge 的真实状态派生站点数组；系统 onMove 落位后一次性写回并重算。
@@ -727,13 +728,17 @@ struct ContentView: View {
         let tint = isFirst ? ContentView.cyan : (isLast ? ContentView.pink : ContentView.sub)
         let tag = isFirst ? "起点" : (isLast ? "终点" : "途经")
         return HStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+            Image(systemName: icon).font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.white)
-                .frame(width: 22, height: 22)
+                .frame(width: 26, height: 26)
                 .background(Circle().fill(tint))
-            Text(s.name).font(.subheadline).foregroundColor(ContentView.ink).lineLimit(1)
+            // 起点 / 终点放大一档：行变高，把「添加停靠站」整体推到默认可见区之外，
+            // 只有上滑查看时才能看到，不再出现按钮露半截被路线选项卡压住的样子。
+            Text(s.name)
+                .font(isFirst || isLast ? .system(size: 20, weight: .semibold) : .system(size: 18, weight: .medium))
+                .foregroundColor(ContentView.ink).lineLimit(1)
             Spacer(minLength: 4)
-            Text(tag).font(.caption2).foregroundColor(ContentView.sub)
+            Text(tag).font(.caption).foregroundColor(ContentView.sub)
             // 右侧三横线只作「可长按拖动」的视觉提示；真正拖动由系统 List.onMove 接管，
             // 长按本行任意位置即可，不再叠加自定义 DragGesture（避免抢手势 / 抖动 / 反复算路）
             Image(systemName: "line.horizontal.3").font(.caption)
@@ -741,7 +746,7 @@ struct ContentView: View {
                 .frame(width: 34, height: 44)
                 .contentShape(Rectangle())
         }
-        .frame(height: 52)
+        .frame(height: 64)
     }
 
     /// 拖动 / 删除落定：第一个站点是新起点、最后一个是新终点、中间是途经点。
@@ -1270,18 +1275,20 @@ struct ContentView: View {
                         }
                         .accessibilityLabel("地图回正，北向上")
                         .padding(.leading, 16)
-                        .padding(.bottom, panelHeight(geo) + keyboardHeight + 14)
+                        .padding(.bottom, drawerLiveHeight(geo) + keyboardHeight + 14)
                         .transition(.opacity)
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     recenterButton
                         .padding(.trailing, 16)
-                        .padding(.bottom, panelHeight(geo) + keyboardHeight + 14)
+                        .padding(.bottom, drawerLiveHeight(geo) + keyboardHeight + 14)
                 }
-                homeDrawer(height: panelHeight(geo), bottomSafe: geo.safeAreaInsets.bottom)
+                // 跟手只改「高度」：抽屉底边始终钉在屏幕下沿，向上生长 / 向下收缩，
+                // 上拉过程中下方不会再露出一条地图；松手由弹簧动画吸附到目标档位。
+                homeDrawer(height: drawerLiveHeight(geo), bottomSafe: geo.safeAreaInsets.bottom)
                     .ignoresSafeArea(edges: .bottom)
-                    .offset(y: geo.safeAreaInsets.bottom + drawerDragY)
+                    .offset(y: geo.safeAreaInsets.bottom)
             }
         }
     }
@@ -1372,11 +1379,25 @@ struct ContentView: View {
         return min(raw, max(122, avail))
     }
 
+    /// 跟手期间的实时高度：抽屉底边始终钉在屏幕下沿，只改变高度（向上生长 / 向下收缩），
+    /// 因此上拉过程中下方不会再露出一条地图；松手后由弹簧动画平滑吸附到 panelHeight 的档位。
+    /// 地图按钮的 padding 也用它（SwiftUI 布局，轻量）；UIKit 地图的 bottomInset 仍用
+    /// panelHeight，避免拖动时逐帧重绘地图造成卡顿。
+    private func drawerLiveHeight(_ geo: GeometryProxy) -> CGFloat {
+        let minH: CGFloat = 122
+        let maxH = max(minH, geo.size.height - keyboardHeight - 20)
+        let live = panelHeight(geo) - drawerDragY      // 上拉 dragY < 0 → 变高；下拉 → 变矮
+        return min(max(live, minH), maxH)
+    }
+
     /// 抽屉：抓手 + 搜索框固定；上滑展开搜索结果 / 地点 / 最近搜索。
     /// 「快捷功能」板块已移除，入口统一收进搜索条右侧的齿轮设置中心。
     /// 背景延伸到屏幕物理底边（底边直角 + 忽略底部安全区），内容按 bottomSafe 留白避开 home indicator。
+    /// 高度由外层 drawerLiveHeight 连续跟手驱动；内容出现也按实时高度判断，避免「空白抽屉往上长」。
     private func homeDrawer(height: CGFloat, bottomSafe: CGFloat) -> some View {
-        let showList = !drawerMinimized && (sheetExpanded || viaManager || addingVia || homeStage != .idle || hasSearchContent)
+        // 跟手上拉越过最小态就显示内容，让展开过程中内容是「逐渐露出」而不是突然闪现
+        let liveExpanded = height > 150
+        let showList = liveExpanded || (!drawerMinimized && (sheetExpanded || viaManager || addingVia || homeStage != .idle || hasSearchContent))
         let canStartNavi = !drawerMinimized && homeStage == .routes && !viaManager && !addingVia
         return VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -1390,18 +1411,20 @@ struct ContentView: View {
                     homeSearchBar.padding(.horizontal, 14).padding(.bottom, 10)
                 }
             }
-            // 手势只加在「抓手 + 搜索框」区域：拖动中只有抽屉自身跟手（轻量合成），地图完全静止；
-            // 松手按档位一次性调整可见区中心，避免每帧重绘 UIKit 地图造成卡顿。
-            // minimumDistance 降到 12：短距离拖动也能进入手势，减少被误判成点击 toggleSheet 的跳变。
-            .gesture(DragGesture(minimumDistance: 12)
+            // 手势只加在「抓手 + 搜索框」区域：拖动时抽屉高度连续跟手（底边不动、向上生长），
+            // 地图完全静止不逐帧重绘；松手用一条弹簧动画把高度吸附到目标档位，
+            // 展开 / 合上有流动感，且任何时刻抽屉底边都贴着屏幕下沿。
+            // minimumDistance 降到 10：短距离拖动也能进入手势，减少被误判成点击 toggleSheet 的跳变。
+            .gesture(DragGesture(minimumDistance: 10)
                 .onChanged { v in
-                    drawerDragY = max(-72, min(150, v.translation.height))
+                    drawerDragY = max(-260, min(220, v.translation.height))
                 }
                 .onEnded { v in
                     let t = v.translation.height
                     let up = t < -45, down = t > 45
-                    // 位移归零与档位切换放进同一条动画：不再叠加两个 spring，消除回抽与残影
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) {
+                    // 位移归零与档位切换放进同一条动画：height 与 panelHeight 一起平滑过渡，
+                    // 不再叠加两个 spring，消除回抽与残影
+                    withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) {
                         drawerDragY = 0
                         if up { drawerMinimized = false; sheetExpanded = true }
                         else if down { sheetExpanded = false; drawerMinimized = true }
@@ -1424,8 +1447,8 @@ struct ContentView: View {
                             }
                             // 「快捷功能」板块已整体移除：巡航 / 独立路线 / 骑行轨迹 /
                             // 车辆与限行 / 全部设置都收进搜索条右侧的齿轮设置中心
-                            if homeStage == .idle && sheetExpanded { favoritesCard() }
-                            if homeStage == .idle && (addingVia || sheetExpanded) { recentSection }
+                            if homeStage == .idle && (sheetExpanded || liveExpanded) { favoritesCard() }
+                            if homeStage == .idle && (addingVia || sheetExpanded || liveExpanded) { recentSection }
                             if !shareStatus.isEmpty && homeStage != .idle {
                                 Text(shareStatus).font(.caption2).foregroundColor(ContentView.sub)
                             }
@@ -1573,7 +1596,7 @@ struct ContentView: View {
                         settingsRow("导航语音", "音色 · 语速 · 播报", "speaker.wave.2", ContentView.pink)
                     }
                     NavigationLink(destination: AnyView(settingsDetail(.favorites))) {
-                        settingsRow("地点", "\(favorites.places.count) 个地点", "star.fill", ContentView.pink)
+                        settingsRow("地点", "\(favorites.places.count) 个地点 · 可拖动排序", "star.fill", ContentView.pink)
                     }
                     Button { hubRides = true } label: {
                         settingsRow("骑行轨迹", "历史行程", "map", ContentView.cyan)
@@ -1654,7 +1677,7 @@ struct ContentView: View {
                 case .debug:
                     debugCard
                 case .favorites:
-                    favoritesCard(editable: true)      // 设置中心保留改备注 / 去这里 / 移除
+                    favoritesCard(editable: true)      // 设置中心：改备注 / 去这里 / 移除 + 按住拖动排序
                 case .routeModes:
                     independentRouteCard
                 case .about:
@@ -1848,29 +1871,75 @@ struct ContentView: View {
         }
     }
     /// 地点（苹果地图式）：一排横向滚动的彩色圆形图标。
-    /// 首页抽屉里点按 = 直接跳到「搜索到该地址」的地点界面（与点搜索结果一致），这里不做任何设置；
-    /// 设置中心「地点」页仍保留改备注 / 去这里 / 移除（editable = true）。
+    /// 首页抽屉（editable = false）：只读，点按直接跳到「搜索到该地址」的地点界面，
+    ///   不出现编辑条、不出现拖动手柄，也不做任何设置 —— 排序只在设置中心做。
+    /// 设置中心「地点」页（editable = true）：纵向列表，按住拖动即可改顺序 + 点按改备注 / 去这里 / 移除；
+    ///   两处共用同一份 Favorites.places（@Published），顺序一改首页抽屉立刻同步。
     private func favoritesCard(editable: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("地点").font(.headline).foregroundColor(ContentView.ink)
             if favorites.places.isEmpty {
                 Text("搜索一个地点后点「收藏」即可加入").font(.caption).foregroundColor(ContentView.sub)
+            } else if editable {
+                Text("按住并拖动可调整顺序；首页抽屉的「地点」会同步，主页那一栏保持只读")
+                    .font(.caption2).foregroundColor(ContentView.sub)
+                    .fixedSize(horizontal: false, vertical: true)
+                List {
+                    ForEach(favorites.places) { place in
+                        favSortRow(place)
+                            .listRowBackground(ContentView.card)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
+                    }
+                    .onMove { src, dst in favorites.move(from: src, to: dst) }
+                }
+                .listStyle(.plain)
+                .background(ContentView.card)
+                .frame(height: CGFloat(favorites.places.count) * 56)
+                .modifier(NoInnerScroll())      // 内层 List 不抢设置页 ScrollView 的滑动
+                Text("点按某一行可改备注 / 去这里 / 移除").font(.caption2).foregroundColor(ContentView.sub)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 20) {
                         ForEach(favorites.places.indices, id: \.self) { i in
-                            placeBubble(i: i, place: favorites.places[i], editable: editable)
+                            placeBubble(i: i, place: favorites.places[i], editable: false)
                         }
                     }
                     .padding(.trailing, 8)
                 }
             }
-            if editable && !favorites.places.isEmpty {
-                Text("点按地点可改备注 / 去这里 / 移除").font(.caption2).foregroundColor(ContentView.sub)
-            }
             // 编辑条只在设置中心的「地点」页出现；首页抽屉点图标直接跳地点界面
             if editable && favEditID != nil { favEditBar }
         }
+    }
+
+    /// 设置中心「地点」页的一行：按住右侧手柄（或整行）拖动换序；点按展开编辑条。
+    /// 序号 / 颜色 / 图标按当前顺序取，和首页抽屉的横向图标行完全一致。
+    private func favSortRow(_ place: Favorites.Place) -> some View {
+        let i = favorites.places.firstIndex { $0.id == place.id } ?? 0
+        return Button {
+            favEditID = place.id
+            favEditName = place.name
+        } label: {
+            HStack(spacing: 12) {
+                Text("\(i + 1)").font(.caption2.monospacedDigit()).foregroundColor(ContentView.sub)
+                    .frame(width: 18)
+                Circle().fill(placeTint(i)).frame(width: 34, height: 34)
+                    .overlay(Image(systemName: placeGlyph(i))
+                        .font(.system(size: 15, weight: .semibold)).foregroundColor(.white))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.name).font(.subheadline).foregroundColor(ContentView.ink).lineLimit(1)
+                    Text(place.address).font(.caption2).foregroundColor(ContentView.sub).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "line.horizontal.3").font(.caption).foregroundColor(ContentView.sub)
+                    .frame(width: 30, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .frame(height: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func placeBubble(i: Int, place: Favorites.Place, editable: Bool) -> some View {
@@ -2096,6 +2165,35 @@ struct ContentView: View {
 }
 
 // MARK: - 小组件
+
+/// 让内嵌的 List 不吞掉父级 ScrollView 的上滑手势：
+/// iOS 16+ 用系统 scrollDisabled；iOS 15 兜底用 UIViewRepresentable 关掉底层 UIScrollView 的滚动。
+/// 这些 List 行高固定、内容刚好铺满，本身没有可滚动内容；拖拽排序（onMove）仍由系统接管。
+private struct NoInnerScroll: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollDisabled(true)
+        } else {
+            content.background(DisableListScroll())
+        }
+    }
+}
+
+private struct DisableListScroll: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView(frame: .zero)
+        DispatchQueue.main.async { [weak v] in
+            guard let v = v else { return }
+            var cur: UIView? = v.superview
+            while let c = cur {
+                if let s = c as? UIScrollView { s.isScrollEnabled = false; break }
+                cur = c.superview
+            }
+        }
+        return v
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
 
 /// 底部面板里的内容块：面板本身就是卡片，里面不再套一层圆角卡
 struct SheetBlock<Content: View>: View {
