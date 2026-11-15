@@ -29,12 +29,12 @@ void animateRing() {
 void drawNavFrame() {
   onWaitScreen = false;                                 // v3.6 离开首页，猫猫不再动
   if (navArrivedHold) {
-    viewInit=false;frameIsMap=false;gfx->fillScreen(C_BLACK);drawStatus();
+    viewInit=false;frameIsMap=false;gfx->fillScreen(C_BLACK);drawStatus(false);
     fxFlag(CX-70,140,1.35f,0,C_WHITE);
     printCentered("ARRIVED",CX,355,4,C_CYAN);needFlush=true;return;
   }
   if (navWaiting) {
-    viewInit = false;gfx->fillScreen(C_BLACK);drawStatus();
+    viewInit = false;gfx->fillScreen(C_BLACK);drawStatus(false);
     // Neutral target: no route, turn arrow, speed or distance until supplied by the source.
     gfx->drawCircle(CX, 205, 30, C_CYAN);gfx->drawCircle(CX, 205, 10, C_CYAN);
     gfx->drawLine(CX-43,205,CX-23,205,C_CYAN);gfx->drawLine(CX+23,205,CX+43,205,C_CYAN);
@@ -49,7 +49,7 @@ void drawNavFrame() {
     gfx->fillScreen(C_BLACK);
     bool over = hasCam && camLimit > 0 && speedKmh > camLimit;
     if (over) fillRingBand(0, 1, 228, 233, C_RED);
-    drawStatus();
+    drawStatus(false);
     drawSpeedBlock(over);
     printCentered("CRUISE", CX, 300, 4, C_CYAN);
     needFlush = true;
@@ -57,7 +57,6 @@ void drawNavFrame() {
   }
   gfx->fillScreen(C_BLACK);
   bool isS = (navDir == "S");
-  bool isFar = !isS && navDist > STAGE_FAR_M;
   bool lanes = laneN > 0 && ringActive;                 // 与地图页一样，跟随转弯倒计时
   bool over = hasCam && camLimit > 0 && speedKmh > camLimit;
   float laneK = lanes ? 0.85f : 1.0f;
@@ -73,15 +72,16 @@ void drawNavFrame() {
   }
   if (over) fillRingBand(0, 1, 228, 233, C_RED);
 
-  drawStatus();
+  drawStatus(false);
   drawSpeedBlock(over);
 
   // 中间图标
   // v1.8.2 图标可用区域：车速下方 ~ 车道（或距离数字）上方，各留 8 像素
   float iconTop = ICON_TOP, iconBot = (lanes ? LANES_Y : DIST_Y) - 8;
-  if (isFar)     drawPreview(navDir, iconCy, 0.66f * laneK, iconTop, iconBot);
-  else if (isS)  drawBigIcon("S", C_WHITE, iconCy, laneK, iconTop, iconBot);
-  else           drawBigIcon(navDir, navDist <= STAGE_NEAR_M ? C_ORANGE : C_WHITE, iconCy, laneK, iconTop, iconBot);
+  // v7.9：远处不再用"白色直行条 + 灰色预告"顶替转向动作；任何距离都按导航方向画箭头，
+  //       指向与手机导航卡片一致。近路口仍用橙色强调。
+  drawBigIcon(navDir, (!isS && navDist <= STAGE_NEAR_M) ? C_ORANGE : C_WHITE,
+              iconCy, laneK, iconTop, iconBot);
 
   // 车道、距离、路名、底部信息
   if (lanes) drawLanes(LANES_Y);
