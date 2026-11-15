@@ -28,6 +28,8 @@ struct ContentView: View {
     @AppStorage("voice_rate") private var voiceRate = Double(AVSpeechUtteranceDefaultSpeechRate)
     @AppStorage("voice_pitch") private var voicePitch = 1.0
     @AppStorage("voice_id") private var voiceID = ""
+    @AppStorage("voice_mode") private var voiceMode = 0        // 0 详细 / 1 简洁 / 2 极简（见 Speech.swift 的 BroadcastMode）
+    @AppStorage("voice_volume") private var voiceVolume = 1.0  // App 内独立播报音量 0~1，默认 1.0（与旧版一致）
     @AppStorage("map_appearance") private var mapAppearance = 0   // 0 自动 / 1 标准 / 2 夜间（设置里选）
 
     @State private var query = ""
@@ -2008,6 +2010,27 @@ struct ContentView: View {
     private var voiceCard: some View {
         CardView {
             Text("导航语音").foregroundColor(ContentView.ink).bold()
+
+            // 播报档位：详细 / 简洁 / 极简（持久设置，下一次导航仍以这里为准）
+            Text("播报方式").font(.subheadline.weight(.semibold)).foregroundColor(ContentView.ink)
+            Picker("播报方式", selection: $voiceMode) {
+                ForEach(BroadcastMode.allCases) { m in
+                    Text(m.title).tag(m.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(BroadcastMode(rawValue: voiceMode)?.note ?? BroadcastMode.detailed.note)
+                .font(.footnote).foregroundColor(ContentView.sub)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // App 内独立播报音量（相对增益，和音乐分开）
+            Text("播报音量  \(Int((voiceVolume * 100).rounded()))%")
+                .font(.subheadline.weight(.semibold)).foregroundColor(ContentView.ink)
+            Slider(value: $voiceVolume, in: 0...1, step: 0.05).tint(Self.pink)
+            Text("这是 App 内的独立音量，和音乐音量分开。iPhone 侧键（系统媒体音量）仍是总闸门：静音或把系统音量调到 0 时，播报一样会没声。")
+                .font(.footnote).foregroundColor(ContentView.sub)
+                .fixedSize(horizontal: false, vertical: true)
+
             Toggle("导航静音", isOn: $settings.voiceMuted)
             Toggle("播报时压低音乐", isOn: $settings.duck)
             Picker("系统音色", selection: $voiceID) {
@@ -2018,7 +2041,7 @@ struct ContentView: View {
             }
             Text("语速"); Slider(value: $voiceRate, in: 0.3...0.6)
             Text("音调"); Slider(value: $voicePitch, in: 0.7...1.4)
-            Button("试听播报") { Speech.shared.test() }
+            Button("试听播报（按当前档位）") { Speech.shared.test() }
         }.foregroundColor(ContentView.ink).tint(Self.pink)
     }
 
