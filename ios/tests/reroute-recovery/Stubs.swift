@@ -1,6 +1,20 @@
 // Test boundaries only: production session, tracking and gate are compiled unchanged.
 enum AmapShare { struct Fail: LocalizedError { let text:String;init(_ text:String){self.text=text};var errorDescription:String?{text} } }
 final class UIApplication {static let shared=UIApplication();var isIdleTimerDisabled=false}
+// ScreenWake is defined in MotoNavApp.swift (the SwiftUI/UIKit app target), which this
+// command-line harness does not compile. Mirror its reference-counted contract here so
+// WebMotorSession.start/stop keep compiling unchanged, exactly as on device.
+enum ScreenWake {
+    nonisolated(unsafe) static var holders: Set<String> = []
+    static func set(_ key: String, on: Bool) {
+        if on { holders.insert(key) } else { holders.remove(key) }
+        apply()
+    }
+    static func refresh() { apply() }
+    private static func apply() {
+        UIApplication.shared.isIdleTimerDisabled = !holders.isEmpty
+    }
+}
 enum NavigationSpeed {static let values=[60,100,120]}
 enum MapGeo {static func wgsToGcj(_ lat:Double,_ lng:Double)->(lat:Double,lng:Double){(lat,lng)}}
 final class NaviBridge {
