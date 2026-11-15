@@ -372,9 +372,11 @@ final class NaviBridge: NSObject, ObservableObject {
 
     // MARK: - 路线和导航
 
-    /// 现在的位置（高德坐标）：导航定位优先，其次手机定位
+    /// 现在的位置（高德坐标）：仅在导航 / 巡航会话进行中才信任高德导航定位快照。
+    /// 会话一结束该快照即失效（见 clearNaviFix），一律回退手机实时定位；
+    /// 否则上一次（尤其是模拟导航）的终点 / 中断点会被当成下一次规划的起点。
     func myPosition() -> (lat: Double, lng: Double)? {
-        if !myLat.isNaN { return (myLat, myLng) }
+        if (navigating || cruising), !myLat.isNaN { return (myLat, myLng) }
         guard let l = LocationService.shared.location else { return nil }
         let g = MapGeo.wgsToGcj(l.coordinate.latitude, l.coordinate.longitude)
         return (g.lat, g.lng)
@@ -387,6 +389,7 @@ final class NaviBridge: NSObject, ObservableObject {
         attach()
         destLat = lat; destLng = lng
         customStart = nil                            // 新目的地：起点回到「我的位置」
+        clearNaviFix()                               // 新会话：丢弃上一次导航残留的定位快照（模拟终点 / 中断点）
         shareRoute = share
         vias = []                                    // 新目的地：途经点清空
         replan()
@@ -641,6 +644,7 @@ final class NaviBridge: NSObject, ObservableObject {
         arriveSeq += 1
         showArrived = arrived                       // 先设这个再设 navigating：导航画面据此决定马上关还是等 4 秒
         navigating = false
+        clearNaviFix()                               // 会话结束：模拟导航终点 / 中断点不得留到下一次规划
         info = text
         shownDir = ""; shownDist = -1
         clearSuggest()
@@ -664,7 +668,12 @@ final class NaviBridge: NSObject, ObservableObject {
         }
     }
 
+    /// 丢弃高德导航定位快照：模拟导航最后一次定位回调是路线终点，中途退出时是中断点。
+    /// 会话结束或开始新规划时必须清空，否则 myPosition() 会把旧点当作「我的位置」用作新路线起点。
+    private func clearNaviFix() { myLat = Double.nan; myLng = Double.nan }
+
     private func resetState() {
+        clearNaviFix()
         tripMeters = 0; tripMaxKmh = 0; tripStarted = Date(); tripPosition = nil
         curDir = ""; curAngle = nil; angleKey = ""; lastRouteKey = ""
         baseDist = 0; speedMps = 0
