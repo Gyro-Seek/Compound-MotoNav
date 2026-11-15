@@ -24,6 +24,10 @@ final class RouteOfflineMaps {
     private var target = 0, display = 0, busy = false
     private var retryAt:[Date]
     private var timer: Timer?
+    /// 全线底图均已就绪时触发一次。由 MapFeeder 用来结束「离线准备期间的屏幕常亮」；
+    /// 测试里不设置该回调，行为与原来完全一致。
+    var onAllReady: (() -> Void)?
+    private var didNotifyAllReady = false
     init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool,
          foregroundBusy: @escaping () -> Bool, currentSpeed:@escaping ()->Int = {0}, onReady: @escaping (RouteMapPlan.Node) -> Void, onStatus: @escaping (String) -> Void) {
         self.style = Settings.shared.theme
@@ -62,7 +66,9 @@ final class RouteOfflineMaps {
         let count = ready.filter { $0 }.count, baseCount = baseReady.filter { $0 }.count
         if count == ready.count {
             onStatus("沿线底图已全部离线：\(count)/\(ready.count) 块（2 米/像素）")
-            timer?.invalidate(); timer = nil; return
+            timer?.invalidate(); timer = nil
+            if !didNotifyAllReady { didNotifyAllReady = true; onAllReady?() }
+            return
         }
         guard UIApplication.shared.applicationState == .active else {
             onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用；回到 App 前台继续下载"); return

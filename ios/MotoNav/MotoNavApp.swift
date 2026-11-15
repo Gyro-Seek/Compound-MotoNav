@@ -1,4 +1,21 @@
 import SwiftUI
+import UIKit
+import Combine
+
+/// 屏幕常亮的引用计数：网页路线导航（WebMotor）和沿线离线底图准备可能同时要求常亮，
+/// 任一释放都不应把另一个的常亮一起关掉。只在主线程读写。
+enum ScreenWake {
+    nonisolated(unsafe) static var holders: Set<String> = []
+    static func set(_ key: String, on: Bool) {
+        if on { holders.insert(key) } else { holders.remove(key) }
+        apply()
+    }
+    /// App 回到前台时重新应用（后台期间系统可能重置了 idle timer 状态）。
+    static func refresh() { apply() }
+    private static func apply() {
+        UIApplication.shared.isIdleTimerDisabled = !holders.isEmpty
+    }
+}
 
 /// 版本：跟随 App 版本（见 Config.swift）
 ///
@@ -75,8 +92,12 @@ struct MotoNavApp: App {
                 .onReceive(NotificationCenter.default.publisher(for:UIApplication.willResignActiveNotification)){_ in
                     MapFeeder.shared.setRenderingAvailable(false)
                 }
+                .onReceive(MapFeeder.shared.$keepAwakeForOffline) { awake in
+                    ScreenWake.set("offline-maps", on: awake)
+                }
                 .onReceive(NotificationCenter.default.publisher(for:UIApplication.didBecomeActiveNotification)){_ in
                     MapFeeder.shared.setRenderingAvailable(true)
+                    ScreenWake.refresh()
                     BleLink.shared.syncPhoneClock(force:true)
                     MusicBridge.shared.pollMetadata(force:true)
                 }

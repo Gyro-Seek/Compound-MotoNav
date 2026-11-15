@@ -198,7 +198,7 @@ final class WebMotorSession: ObservableObject {
         speed = 60; offCount = 0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
         roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
         announced = ""; status = simulate ? "模拟导航" : "定位导航"; token = UUID()
-        UIApplication.shared.isIdleTimerDisabled = true
+        ScreenWake.set("webmotor", on: true)
         MapFeeder.shared.onNaviStart(); BleLink.shared.send("C")
         MapFeeder.shared.prepareRoute(key: route.id.uuidString, coords: route.coords)
         WebRouteMetadata.shared.load(route)
@@ -232,7 +232,7 @@ final class WebMotorSession: ObservableObject {
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
         rerouteWatchdog?.cancel(); rerouteWatchdog = nil; reroutePolicy.reset()
         if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
-        running = false; rerouting = false; UIApplication.shared.isIdleTimerDisabled = false
+        running = false; rerouting = false; ScreenWake.set("webmotor", on: false)
     }
     private func at(_ distance: Double) -> MotorPoint {
         guard let route = route else { return MotorPoint(lat: 0,lng: 0) }

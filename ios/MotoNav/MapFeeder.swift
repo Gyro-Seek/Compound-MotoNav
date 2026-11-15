@@ -40,6 +40,11 @@ final class MapFeeder: ObservableObject {
     @Published var routeInfo = ""
     @Published var chunkAcked = false
     @Published var routeAcked = false
+    /// 沿线离线底图「正在准备」时为 true。App 层据此在准备期间保持屏幕唤醒：
+    /// RouteOfflineMaps.pump() 只在 applicationState == .active 时下载新块，
+    /// 自动息屏会把预下载掐断在半路，缓存不齐则锁屏后无图可发。
+    /// 全线就绪（onAllReady）或导航结束时置 false，放行系统自动息屏。
+    @Published var keepAwakeForOffline = false
 
     private let worker = DispatchQueue(label: "motonav.map", qos: .userInitiated)
     private(set) var frame: MapGeo.Frame?
@@ -116,6 +121,7 @@ final class MapFeeder: ObservableObject {
     }
     func onNaviEnd() {
         offlineMaps?.close(); offlineMaps = nil; offlineKey = ""
+        keepAwakeForOffline = false
         handoff.clear()
         deferredRoofs=nil;upgradeBase=nil
         preparedCoords = []; preparedKey = ""; offlineStatus = "沿线下载已暂停，重新选择路线后继续"
@@ -130,6 +136,7 @@ final class MapFeeder: ObservableObject {
         chunkBytes=nil;chunkStyle=nil;chunkAcked=false
         BleLink.shared.cancelMapTransfers()
         offlineMaps?.close(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
+        keepAwakeForOffline = false
         if preparedCoords.count >= 2 { prepareRoute(key: preparedKey, coords: preparedCoords) }
         // A style change must fetch new data even while simulation/location is paused.
         let requestedStyle=Settings.shared.theme
@@ -160,7 +167,9 @@ final class MapFeeder: ObservableObject {
         guard coords.count >= 2 else { return }
         preparedKey = key; preparedCoords = coords
         let f = ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
-        guard enabled, !satMode, Settings.shared.theme != 11 else { return }
+        guard enabled, !satMode, Settings.shared.theme != 11 else {
+            keepAwakeForOffline = false; return
+        }
         var hasher = Hasher()
         for c in coords { hasher.combine(c.lat); hasher.combine(c.lng) }
         let identity = "\(key)|\(hasher.finalize())|\(src)|\(buildingMode)"
@@ -195,8 +204,16 @@ final class MapFeeder: ObservableObject {
                 }, onStatus: { [weak self] status in
                     if self?.offlineKey == identity { self?.offlineStatus = status }
                 })
-            offlineMaps = maps; maps.start()
-        } catch { offlineStatus = "沿线离线地图：\(error.localizedDescription)" }
+            // start() 把首次 pump 排到主线程，先设 true 再 start 不会漏掉关闭；
+            // 缓存已全部命中时会在下一轮 runloop 立刻回调 onAllReady 置回 false。
+            maps.onAllReady = { [weak self] in self?.keepAwakeForOffline = false }
+            offlineMaps = maps
+            keepAwakeForOffline = true
+            maps.start()
+        } catch {
+            keepAwakeForOffline = false
+            offlineStatus = "沿线离线地图：\(error.localizedDescription)"
+        }
     }
     func onLocation(lat: Double, lng: Double, bearing: Double, kmh: Int) {
         let f = ensureFrame(lat: lat, lng: lng), x = f.x(lng), y = f.y(lat)
