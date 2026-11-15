@@ -29,7 +29,7 @@ struct ContentView: View {
     @AppStorage("voice_pitch") private var voicePitch = 1.0
     @AppStorage("voice_id") private var voiceID = ""
     @AppStorage("voice_mode") private var voiceMode = 0        // 0 详细 / 1 简洁 / 2 极简（见 Speech.swift 的 BroadcastMode）
-    @AppStorage("voice_volume") private var voiceVolume = 1.0  // App 内独立播报音量 0~1，默认 1.0（与旧版一致）
+    @AppStorage("voice_volume") private var voiceVolume = 1.0  // App 内独立播报音量 0~2 = 0%~200%，默认 1.0 = 100%
     @AppStorage("map_appearance") private var mapAppearance = 0   // 0 自动 / 1 标准 / 2 夜间（设置里选）
 
     @State private var query = ""
@@ -2023,11 +2023,11 @@ struct ContentView: View {
                 .font(.footnote).foregroundColor(ContentView.sub)
                 .fixedSize(horizontal: false, vertical: true)
 
-            // App 内独立播报音量（相对增益，和音乐分开）
+            // App 内独立播报音量 0%~200%（相对增益，和音乐分开）
             Text("播报音量  \(Int((voiceVolume * 100).rounded()))%")
                 .font(.subheadline.weight(.semibold)).foregroundColor(ContentView.ink)
-            Slider(value: $voiceVolume, in: 0...1, step: 0.05).tint(Self.pink)
-            Text("这是 App 内的独立音量，和音乐音量分开。iPhone 侧键（系统媒体音量）仍是总闸门：静音或把系统音量调到 0 时，播报一样会没声。")
+            Slider(value: $voiceVolume, in: 0...2, step: 0.05).tint(Self.pink)
+            Text("0%~100% 为常规音量；100% 以上由 App 对语音做软件增益（最多 2 倍），已做限幅避免爆音，风噪大时可往上调。这是 App 内的独立音量，和音乐音量分开；iPhone 侧键（系统媒体音量）仍是总闸门：静音或把系统音量调到 0 时，播报一样会没声。")
                 .font(.footnote).foregroundColor(ContentView.sub)
                 .fixedSize(horizontal: false, vertical: true)
 

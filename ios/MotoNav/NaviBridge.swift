@@ -9,6 +9,7 @@ import CoreLocation
 /// - 高德每秒给一次导航信息：转向图标、到路口的距离、路名、剩余里程和时间 → 按安卓版同样的格式发给圆屏
 /// - 两次导航信息之间按车速推算距离（每 0.2 秒），圆屏上的数字和进度环走得更顺
 /// - 车速、电子眼限速、播报文字（交给 Speech 念，播报时压低音乐）
+/// - 极简播报档位下，车速超过前方测速限速 8% 时，进入 500 米范围补一句超速提醒
 /// - iOS v0.2 和安卓版对齐：
 ///   · 路口实际转弯角度 "L,153,-128"（第三个数：负数向左、正数向右），按路线形状算
 ///   · 车道 "#j,…"；前方红绿灯距离 "#g,米"（300 米内）
@@ -237,6 +238,8 @@ final class NaviBridge: NSObject, ObservableObject {
     private var camLimit = 0
     private var camLat = 0.0, camLng = 0.0
     private var camMinDist = Int.max
+    private var camAlertKey = ""                      // 当前测速点的去重键（限速 + 坐标）
+    private var camOverspeedAlerted = false           // 极简档超速提醒：同一个测速点只念一次
     private var lastCamMapMsg = ""
     /// 小地图上的一个电子眼 / 道路安全提示点
     struct MapPt { let x: Int, y: Int, spd: Int, icon: Int, dist: Int; var at = Date() }
@@ -879,11 +882,28 @@ final class NaviBridge: NSObject, ObservableObject {
         if d < camMinDist { camMinDist = d }
         let m = "#k,\(camLimit),\((d + 5) / 10 * 10)"
         if m != lastCamMsg { lastCamMsg = m; BleLink.shared.send(m) }
+        maybeOverspeedAlert(d)
+    }
+
+    /// 极简档例外播报：车速超过前方测速限速 8% 时，在进入 500 米范围后提醒一次。
+    /// 高德电子眼回调（mnCameras）与每 0.2 秒的 GPS 距离推算（trackCamera）都会经过
+    /// updateCamDist，所以判断统一放这里；换测速点 / 测速牌消失时重置去重标记。
+    private func maybeOverspeedAlert(_ d: Int) {
+        let key = "\(camLimit):\(camLat):\(camLng)"
+        if key != camAlertKey { camAlertKey = key; camOverspeedAlerted = false }
+        guard navigating || cruising else { return }
+        guard OverspeedRule.shouldAlert(minimal: BroadcastMode.current == .minimal,
+                                        speedKmh: speedKmhNow, limit: camLimit,
+                                        distance: d, alerted: camOverspeedAlerted) else { return }
+        camOverspeedAlerted = true
+        Speech.shared.speakAlert(OverspeedRule.text(speedKmh: speedKmhNow, limit: camLimit, distance: d))
     }
 
     private func clearCamera() {
         camLimit = 0
         camMinDist = Int.max
+        camAlertKey = ""
+        camOverspeedAlerted = false
         if lastCamMsg != "#k" { lastCamMsg = "#k"; BleLink.shared.send("#k") }
     }
 

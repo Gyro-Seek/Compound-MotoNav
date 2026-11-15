@@ -14,6 +14,7 @@ import ObjectiveC
 /// 不再叠加自定义的大按钮，避免与高德自带底栏重叠
 /// iOS v0.16.3：浮层控制改为车速圈正下方竖排两个圆形玻璃图标按钮（先设置后播报）；
 /// 播报按钮即「是否播报」开关，不再弹出档位选项浮层
+/// 调整：按钮组整体再往上放约「一个按钮的距离」（64pt），只改底部留白，不改尺寸 / 顺序 / 交互
 
 /// 接住高德导航界面的按钮回调（和 NaviBridge 一样在运行时登记协议，见 CLAUDE.md 高德坑第 1 条）
 final class DriveViewController: NSObject, ObservableObject {
@@ -129,7 +130,9 @@ struct NaviScreen: View {
     /// 按钮组距左边缘（对齐车速圈中心用）；真机上按车速圈实际位置微调。
     private let glassButtonLeading: CGFloat = 20
     /// 按钮组距底部的距离：让按钮落在车速圈正下方，同时避开高德自带底栏。
-    private let glassButtonBottom: CGFloat = 96
+    /// 原 96 → 160：整体往上移一个按钮直径（glassButtonSize = 64），即「往上放一点，一个按钮的距离」。
+    /// 只有一个常量，真机上要再微调就改这里。
+    private let glassButtonBottom: CGFloat = 160
 
     /// 导航时浮在高德界面上的控制：车速圈正下方竖排两个圆形玻璃按钮，从上到下先「设置」后「播报」。
     /// · 播报按钮 = 是否播报的开关（静音），点击不再弹出任何选项浮层；
