@@ -87,6 +87,7 @@ void renderPage(int p, int detail) {
   page = p; sliding = false;
   if (p == 2) drawMusic();
   else if (p == 1) { wxDetail = detail; drawWeather(); }
+  else if (p == FixedPageLayout::CLOCK_PAGE) drawClockPage();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; wxDetail = keepDetail; sliding = ks;
@@ -199,6 +200,8 @@ void slideCommit() {
     onWaitScreen = false;
     wxDirty = false;
     if (!wxHave || millis() - wxAt > 15UL * 60 * 1000) { pendingEvt = "T,W"; wxAskAt = millis(); }
+  } else if (page == FixedPageLayout::CLOCK_PAGE) {
+    onWaitScreen = false;                   // slideNew 里已是渲染好的时钟页
   } else {
     if (inNav) navDirty = true;
     else { riderPrevF = -1; riderPrevZ = -2; catForce = true; }
@@ -211,6 +214,7 @@ void slideCancel() {
   renderPage(page, wxDetail);
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
+  else if (page == FixedPageLayout::CLOCK_PAGE) { /* renderPage 已重画时钟页 */ }
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -248,6 +252,7 @@ void dragMove(int dx, int dy, unsigned long now) {
   if (!dragging) {
     int threshold = page == 2 ? 36 : DRAG_START;
     if (abs(dx) < threshold && abs(dy) < threshold) return;
+    // 判向与左右换页完全一致：谁的分量大就往谁那边走，不针对时钟页放宽。
     dragHoriz = abs(dx) >= abs(dy);
     int d = dragHoriz ? dx : dy;
     dragSign = d > 0 ? 1 : -1;
@@ -270,6 +275,7 @@ void dragMove(int dx, int dy, unsigned long now) {
 void dragEnd() {
   if (!dragging) return;
   int full = dragHoriz ? LCD_WIDTH : LCD_HEIGHT;
+  // 提交条件与左右换页完全一致：不再为时钟页另设阈值 / 轻甩参数。
   bool go = dragP > full * 0.3f || (dragV > 0.35f && dragP > 24);
   if (dragV < -0.35f) go = false;                       // 往回甩：取消
   float target = go ? full : 0;
@@ -284,7 +290,9 @@ void dragEnd() {
 void dragAbort() {
   if (!dragging) return;
   sliding = false; dragging = false;
-  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true; else if (inNav) navDirty = true;
+  if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true;
+  else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+  else if (inNav) navDirty = true;
 }
 
 // 将触摸点换算到画布坐标，按钮使用较大的点按范围。
