@@ -31,7 +31,6 @@ void drawMapBadge() {
     return;
   }
   bool isS = navDir == "S";
-  bool far = !isS && navDist > STAGE_FAR_M;           // v2.4 远处：先显示直行
   bool nearJ = !isS && navDist <= MAP_NEAR_M;
   bool veryNear = !isS && navDist <= STAGE_NEAR_M;
   uint16_t col = veryNear ? C_ORANGE : C_WHITE;
@@ -39,7 +38,8 @@ void drawMapBadge() {
   iconHalo = true;
   if (!nearJ) {
     int up = tripOn ? 24 : 0;                          // v3.1 有行程信息时整体上移，下面留一行
-    drawBigIconAt((isS || far) ? String("S") : navDir, C_WHITE, 395 - up, 1.0f, CX - 48, 368 - up, 418 - up, 60);
+    // v7.9：远处也按真实导航方向画箭头，不再强制直行（与手机导航卡片一致）
+    drawBigIconAt(navDir, C_WHITE, 395 - up, 1.0f, CX - 48, 368 - up, 418 - up, 60);
     int sz = dt.length() <= 4 ? 4 : 3;
     printOutlined(dt, CX + 46, (sz == 4 ? 378 : 382) - up, sz, C_WHITE);
     if (tripOn) drawTripLine(404);
