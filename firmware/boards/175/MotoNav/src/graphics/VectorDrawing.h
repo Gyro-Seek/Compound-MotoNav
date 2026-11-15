@@ -319,6 +319,12 @@ void drawArrive(uint16_t col, float cy, float k) {
 }
 
 bool dirAngle(const String &dir, float &deg) {
+  // v7.9：手机把"直行偏左/偏右"报成 S 但同时给了转角时，也按真实角度画，
+  //       让设备箭头指向和手机导航卡片一致。没有角度时行为不变（仍是笔直向上）。
+  if (dir == "S" && !isnan(navAngle) && fabsf(navAngle) >= 8.0f) {
+    deg = constrain(navAngle, -60.0f, 60.0f);
+    return true;
+  }
   // v1.8：有实际角度、并且左右方向一致时，用实际角度
   if (!isnan(navAngle) && (dir == "L" || dir == "R" || dir == "SL" || dir == "SR")) {
     bool left = (dir == "L" || dir == "SL");

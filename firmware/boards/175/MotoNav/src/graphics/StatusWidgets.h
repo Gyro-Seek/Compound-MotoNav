@@ -25,8 +25,11 @@ void drawBattery(int x0, int y0, bool backing = false) {
   gfx->print(String(batPct));
 }
 
-void drawStatus() {
-  gfx->fillRect(CX - 9, 21, 9 + 14 + 24 + 2 + 5 + 18 + 4, 19, C_BLACK);   // v7.2 先擦掉旧的（只重画状态栏时用）
+// v7.9：整帧重画时前面已经 fillScreen，不需要再擦状态栏底。这块 72x19 的黑矩形
+// 会盖住外圈圆环顶部偏右（约 12:30~1 点方向）的一小段，形成"右上角黑色遮挡"。
+// 只有局部重画状态栏（BatteryPolling）才需要擦掉旧内容。
+void drawStatus(bool eraseBacking) {
+  if (eraseBacking) gfx->fillRect(CX - 9, 21, 9 + 14 + 24 + 2 + 5 + 18 + 4, 19, C_BLACK);
   aaDisc(CX, 30, 7, bleConnected ? C_GREEN : C_GREY);
   drawBattery(CX + 14, 24);                               // v6.8 电量（蓝牙小圆点右边）
   needFlush = true;
