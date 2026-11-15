@@ -58,17 +58,22 @@ void handleText(const String &m) {
   }
   if (m.startsWith("#LY,")) {
     unsigned long gen = 0; unsigned title = 0, artist = 0;
-    if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3 && gen == appleMedia.generation &&
-        title == appleMedia.values[0].revision && artist == appleMedia.values[1].revision) {
+    if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3) {
+      // #LY 只作为曲目/歌词切换信号：generation 或 title/artist 版本变化才清掉上一首歌词，
+      // 不再要求与 appleMedia 完全相等（AMS 未连上、媒体按键关闭时歌词照常显示）。
+      if (gen != lyricImageGeneration || title != lyricImageTitleRevision || artist != lyricImageArtistRevision) {
+        for (int s = 12; s <= 14; s++) { imgs[s].showW = 0; imgs[s].showH = 0; imgs[s].recvId = -1; imgs[s].recvMask = 0; imgs[s].recvParts = 0; }
+        musicDirty = true;
+      }
       lyricImageGeneration = gen; lyricImageTitleRevision = title; lyricImageArtistRevision = artist;
-    } else { lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    }
     return;
   }
   if (m == "#ML,0" || m == "#ML,1") {
     bool wasEnabled = musicLyrics;
     musicLyrics = m == "#ML,1";
     if (!musicLyrics) {
-      lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; imgs[12].recvMask = 0; imgs[12].recvParts = 0;
+      lyricImageGeneration = 0; for (int s = 12; s <= 14; s++) { imgs[s].showW = 0; imgs[s].showH = 0; imgs[s].recvId = -1; imgs[s].recvMask = 0; imgs[s].recvParts = 0; }
       // Older companion renderers may have put lyrics in the artist bitmap.
       // Ask for a fresh title/artist once per connection or on an actual OFF transition.
       static uint32_t refreshedEpoch = 0xffffffff;
@@ -87,7 +92,8 @@ void handleText(const String &m) {
       hidMusicMode = enabled; hidPulses.cancelQueued();
       Preferences pr; pr.begin("motonav", false); pr.putBool("mediahid", enabled); pr.end();
     }
-    if (!hidMusicMode) { musicLyrics = false; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    // 歌词与"蓝牙媒体按键"模式解耦：切换媒体模式不再强制关闭逐句歌词。
+    if (!hidMusicMode) { for (int s = 12; s <= 14; s++) { imgs[s].showW = 0; imgs[s].showH = 0; imgs[s].recvId = -1; } }
     musicAck = 0; musicAckUntil = 0; musicDirty = true;
     pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
     return;
