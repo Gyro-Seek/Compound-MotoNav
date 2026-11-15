@@ -32,7 +32,8 @@ void handleText(const String &m) {
   if(m=="#BC,1" || m=="#BC,0") {setRasterBuildingCarry(m=="#BC,1");return;}
   if(m.startsWith("#TIME,")) {
     if(homeClock.receive(m.c_str(),millis())) {
-      drawHomeClock();
+      drawHomeClock();                                   // 首页等待态的小数字时钟
+      if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();   // 正在看时钟页：同步后立即刷新
       Serial.printf("CLOCK sync time=%s date=%s\n",homeClockTime,homeClockDate);
     }
     return;
