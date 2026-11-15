@@ -83,6 +83,7 @@ struct {
 namespace AppleMediaData { double duration(const char*){return 0;} }
 bool hidMediaReady(){return false;}
 struct {bool enqueue(int){return true;}} hidPulses;
+void drawClockPage(){}   // 时钟页渲染 stub（布局测试只关心换页状态）
 #include "../boards/175/MotoNav/FixedPageLayout.h"
 #include "../boards/175/MotoNav/src/pages/WeatherPage.h"
 #include "../boards/175/MotoNav/src/pages/PageNavigation.h"
@@ -94,6 +95,17 @@ void reset(int p=0,int detail=0){
 void swipe(int dx,int dy,bool finish=true){
   dragMove(-dx,-dy,millis()); // The hardware has both axis flips enabled.
   if(finish)dragEnd();
+}
+// Real finger: cumulative displacement reported every ~12ms, not one big jump.
+// TOUCH_FLIP_X/Y are both enabled, so pass the negative of the canvas vector.
+void gesture(int dxEnd,int dyEnd,int startPage=0,int steps=20,int jitterDx=0,int jitterDy=0){
+  reset(startPage);
+  for(int i=1;i<=steps;i++){
+    int dx=(jitterDx&&i==1)?jitterDx:dxEnd*i/steps;
+    int dy=(jitterDy&&i==1)?jitterDy:dyEnd*i/steps;
+    dragMove(-dx,-dy,millis());
+  }
+  dragEnd();
 }
 bool has(const std::string& value){for(const auto& s:text)if(s.value==value)return true;return false;}
 int main(){
@@ -109,7 +121,22 @@ int main(){
   swipe(0,-350);assert(page==1&&wxDetail==2&&!dragging);
   swipe(0,350);assert(page==1&&wxDetail==0);
   swipe(350,0);assert(page==0);
+  // iOS 时钟页：实机上滑(sign<0)进入、下滑(sign>0)返回；时钟页不能左右滑 / 继续上滑。
+  swipe(0,-350);assert(page==FixedPageLayout::CLOCK_PAGE&&!dragging);
+  swipe(350,0);assert(page==FixedPageLayout::CLOCK_PAGE&&!dragging);
+  swipe(-350,0);assert(page==FixedPageLayout::CLOCK_PAGE&&!dragging);
+  swipe(0,-350);assert(page==FixedPageLayout::CLOCK_PAGE&&!dragging);
   swipe(0,350);assert(page==0&&!dragging);
+  reset(FixedPageLayout::CLOCK_PAGE);swipe(0,350);assert(page==0);
+  // 纯布局层的边界：主页只有上滑能进时钟，时钟页只有下滑能回主页。
+  assert(FixedPageLayout::move(0,0,false,-1).allowed &&
+         FixedPageLayout::move(0,0,false,-1).page==FixedPageLayout::CLOCK_PAGE);
+  assert(!FixedPageLayout::move(0,0,false,1).allowed);
+  assert(!FixedPageLayout::move(FixedPageLayout::CLOCK_PAGE,0,false,-1).allowed);
+  assert(FixedPageLayout::move(FixedPageLayout::CLOCK_PAGE,0,false,1).page==0);
+  assert(!FixedPageLayout::move(2,0,false,-1).allowed);
+  // 下滑(sign>0)不应再进时钟；从主页下滑应无目标，避免把左右换页误判成竖向。
+  reset(0);swipe(0,350);assert(page==0&&!dragging);
   reset(2);swipe(350,0);assert(page==2&&!dragging);
   swipe(0,350);assert(page==2&&!dragging);
 
@@ -142,5 +169,23 @@ int main(){
   // Phone offline, no weather data: all five positions still remain accessible.
   bleConnected=false;bleAuthed=false;reset();swipe(-350,0);swipe(0,-350);
   assert(page==1&&wxDetail==2);swipe(0,350);swipe(350,0);swipe(350,0);assert(page==2);
-  std::puts("PASS: fixed adjacency, gesture commit/cancel/abort, page persistence, offline access, and missing/rain/alert states");
+
+  // Real multi-sample drags: vertical clock swaps must behave exactly like the
+  // horizontal page swaps (same dragMove/dragEnd, no clock-only thresholds).
+  const int CLK=FixedPageLayout::CLOCK_PAGE;
+  gesture(-200,0);     assert(page==1&&!dragging);        // left
+  gesture(200,0);      assert(page==2&&!dragging);        // right
+  gesture(0,-200);     assert(page==CLK&&!dragging);      // up -> clock
+  gesture(0,-300);     assert(page==CLK&&!dragging);
+  gesture(60,-200);    assert(page==CLK&&!dragging);      // slight drift, vertical wins
+  gesture(-200,60);    assert(page==1&&!dragging);        // slight drift, horizontal wins
+  gesture(0,200,CLK);  assert(page==0&&!dragging);        // clock down -> home
+  gesture(0,-200,CLK); assert(page==CLK&&!dragging);      // clock up -> no target
+  gesture(0,200);      assert(page==0&&!dragging);        // home down -> no target, not stuck
+  gesture(0,-20);      assert(page==0&&!dragging);        // very short drag -> springs back (same as horizontal)
+  // A first-frame sideways twitch is classified by the same rule as any other
+  // drag (dominant axis wins); it must never leave the gesture stuck dragging.
+  gesture(0,-220,0,20,18,0); assert(!dragging);
+
+  std::puts("PASS: fixed adjacency, iOS clock page up/down, gesture commit/cancel/abort, page persistence, offline access, missing/rain/alert states, and real multi-sample drags (vertical == horizontal)");
 }
