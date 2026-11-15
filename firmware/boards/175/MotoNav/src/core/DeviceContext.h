@@ -147,7 +147,7 @@ float mapCamLockH[MCAM_MAX];  // v4.0 放图标时的地图朝向：之后固定
 uint8_t laneBg[8], laneFr[8]; // 每条车道的背景方向码、推荐方向码（0xF = 不推荐）
 
 // ===== 文字图片（手机渲染好的 4 位灰度图）=====
-#define IMG_SLOTS 13           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
+#define IMG_SLOTS 15           // 0=路名 1=底部信息 2=来电人 3/4=天气 5/6=歌名/歌手 12/13/14=歌词当前句/上一句/下一句
 #define IMG_MAX   8192        // 每张图最多字节数
 struct TextImg {
   uint8_t *show;              // 正在显示的图
