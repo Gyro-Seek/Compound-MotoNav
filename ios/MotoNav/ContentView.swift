@@ -52,7 +52,6 @@ struct ContentView: View {
     @State private var favEditName = ""
     @State private var stopRows: [NaviBridge.Stop] = []  // 停靠站列表的稳定数据源：拖动时同 id 重排，不整表重建
     @State private var stopReplanWork: DispatchWorkItem? = nil  // 连续拖动去抖：最后一次松手稳定后才算路
-    @State private var drawerDragY: CGFloat = 0         // 抽屉跟手高度增量：上拉为负→抽屉变高，下拉为正→变矮
     @State private var showMapMenu = false              // 右上角地图模式菜单（自定义窄浮层）
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastHandledShare = ""        // 去重：onOpenURL 和前台自动消费可能同时到
@@ -1236,8 +1235,8 @@ struct ContentView: View {
                         trafficSegs: (homeStage == .routes || addingVia) ? navi.trafficSegs : [],
                         dest: (homeStage == .routes || addingVia) ? navi.destCoord : nil,
                         vias: viaCoords,
-                        // 拖动期间不再逐帧改写 bottomInset：只有抽屉档位 / 键盘状态变化才更新。
-                        // 否则 SwiftUI 每帧调 updateUIView 写 screenAnchor，UIKit 地图会被反复重绘而卡顿。
+                        // 抽屉拖动期间整个面板保持静止，bottomInset 只在档位 / 键盘状态变化时更新一次，
+                        // UIKit 地图不会被反复要求重绘（也不会出现拖动残影）。
                         bottomInset: max(0, panelHeight(geo) + keyboardHeight),
                         onRotation: { rotated in mapRotated = rotated },
                         onPoiTap: { name, coord in selectMapPoi(name: name, coord: coord) },
@@ -1275,18 +1274,19 @@ struct ContentView: View {
                         }
                         .accessibilityLabel("地图回正，北向上")
                         .padding(.leading, 16)
-                        .padding(.bottom, drawerLiveHeight(geo) + keyboardHeight + 14)
+                        .padding(.bottom, panelHeight(geo) + keyboardHeight + 14)
                         .transition(.opacity)
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     recenterButton
                         .padding(.trailing, 16)
-                        .padding(.bottom, drawerLiveHeight(geo) + keyboardHeight + 14)
+                        .padding(.bottom, panelHeight(geo) + keyboardHeight + 14)
                 }
-                // 跟手只改「高度」：抽屉底边始终钉在屏幕下沿，向上生长 / 向下收缩，
-                // 上拉过程中下方不会再露出一条地图；松手由弹簧动画吸附到目标档位。
-                homeDrawer(height: drawerLiveHeight(geo), bottomSafe: geo.safeAreaInsets.bottom)
+                // 抽屉高度只由档位（panelHeight）决定，拖动过程中完全不变：
+                // 不再逐帧改写 @State，含毛玻璃材质的整棵抽屉视图树也就不会被逐帧重绘，
+                // 彻底消除上滑 / 下滑时的残影、文字重影与模糊；松手后一次切换档位完成展开 / 收起。
+                homeDrawer(height: panelHeight(geo), bottomSafe: geo.safeAreaInsets.bottom)
                     .ignoresSafeArea(edges: .bottom)
                     .offset(y: geo.safeAreaInsets.bottom)
             }
@@ -1379,25 +1379,12 @@ struct ContentView: View {
         return min(raw, max(122, avail))
     }
 
-    /// 跟手期间的实时高度：抽屉底边始终钉在屏幕下沿，只改变高度（向上生长 / 向下收缩），
-    /// 因此上拉过程中下方不会再露出一条地图；松手后由弹簧动画平滑吸附到 panelHeight 的档位。
-    /// 地图按钮的 padding 也用它（SwiftUI 布局，轻量）；UIKit 地图的 bottomInset 仍用
-    /// panelHeight，避免拖动时逐帧重绘地图造成卡顿。
-    private func drawerLiveHeight(_ geo: GeometryProxy) -> CGFloat {
-        let minH: CGFloat = 122
-        let maxH = max(minH, geo.size.height - keyboardHeight - 20)
-        let live = panelHeight(geo) - drawerDragY      // 上拉 dragY < 0 → 变高；下拉 → 变矮
-        return min(max(live, minH), maxH)
-    }
-
     /// 抽屉：抓手 + 搜索框固定；上滑展开搜索结果 / 地点 / 最近搜索。
     /// 「快捷功能」板块已移除，入口统一收进搜索条右侧的齿轮设置中心。
     /// 背景延伸到屏幕物理底边（底边直角 + 忽略底部安全区），内容按 bottomSafe 留白避开 home indicator。
-    /// 高度由外层 drawerLiveHeight 连续跟手驱动；内容出现也按实时高度判断，避免「空白抽屉往上长」。
+    /// 高度只由档位决定：拖动过程中抽屉保持原样、不发生任何重绘，松手后一次切换档位。
     private func homeDrawer(height: CGFloat, bottomSafe: CGFloat) -> some View {
-        // 跟手上拉越过最小态就显示内容，让展开过程中内容是「逐渐露出」而不是突然闪现
-        let liveExpanded = height > 150
-        let showList = liveExpanded || (!drawerMinimized && (sheetExpanded || viaManager || addingVia || homeStage != .idle || hasSearchContent))
+        let showList = !drawerMinimized && (sheetExpanded || viaManager || addingVia || homeStage != .idle || hasSearchContent)
         let canStartNavi = !drawerMinimized && homeStage == .routes && !viaManager && !addingVia
         return VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -1411,21 +1398,19 @@ struct ContentView: View {
                     homeSearchBar.padding(.horizontal, 14).padding(.bottom, 10)
                 }
             }
-            // 手势只加在「抓手 + 搜索框」区域：拖动时抽屉高度连续跟手（底边不动、向上生长），
-            // 地图完全静止不逐帧重绘；松手用一条弹簧动画把高度吸附到目标档位，
-            // 展开 / 合上有流动感，且任何时刻抽屉底边都贴着屏幕下沿。
-            // minimumDistance 降到 10：短距离拖动也能进入手势，减少被误判成点击 toggleSheet 的跳变。
+            // 手势只用来「识别上滑 / 下滑方向」：拖动过程中不更新任何 @State，
+            // 抽屉保持完全静止（零重绘），因此不会再出现毛玻璃残影、文字重影、半屏错位。
+            // 手指离开后立即按方向一次切换档位，完成收起 / 展开；不再有跟手过渡与回抽。
+            // minimumDistance 10：短距离拖动也能进入手势，减少被误判成点击 toggleSheet 的跳变。
             .gesture(DragGesture(minimumDistance: 10)
-                .onChanged { v in
-                    drawerDragY = max(-260, min(220, v.translation.height))
-                }
                 .onEnded { v in
                     let t = v.translation.height
                     let up = t < -45, down = t > 45
-                    // 位移归零与档位切换放进同一条动画：height 与 panelHeight 一起平滑过渡，
-                    // 不再叠加两个 spring，消除回抽与残影
-                    withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) {
-                        drawerDragY = 0
+                    // 「立即完成」：用禁用动画的事务写入档位，松手瞬间一步到位，
+                    // 不带跟手过渡、弹簧吸附或回抽；点抓手 toggleSheet 仍保留原有短动画。
+                    var tx = Transaction()
+                    tx.disablesAnimations = true
+                    withTransaction(tx) {
                         if up { drawerMinimized = false; sheetExpanded = true }
                         else if down { sheetExpanded = false; drawerMinimized = true }
                     }
@@ -1447,8 +1432,8 @@ struct ContentView: View {
                             }
                             // 「快捷功能」板块已整体移除：巡航 / 独立路线 / 骑行轨迹 /
                             // 车辆与限行 / 全部设置都收进搜索条右侧的齿轮设置中心
-                            if homeStage == .idle && (sheetExpanded || liveExpanded) { favoritesCard() }
-                            if homeStage == .idle && (addingVia || sheetExpanded || liveExpanded) { recentSection }
+                            if homeStage == .idle && sheetExpanded { favoritesCard() }
+                            if homeStage == .idle && (addingVia || sheetExpanded) { recentSection }
                             if !shareStatus.isEmpty && homeStage != .idle {
                                 Text(shareStatus).font(.caption2).foregroundColor(ContentView.sub)
                             }
