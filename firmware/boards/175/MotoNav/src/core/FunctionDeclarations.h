@@ -75,6 +75,8 @@ void drawRider(int f, int zph);
 void animateCat();
 void drawPageDots();
 void drawWaiting(int st);
+void drawClockPage();              // iOS 时钟页（定义见 src/pages/ClockPage.h）
+void clockTick();                  // 每秒刷新秒针
 void drawPairScreen();
 static float frand(float a, float b);
 void startArriveFx(bool wp);
