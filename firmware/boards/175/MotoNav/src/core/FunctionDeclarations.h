@@ -58,7 +58,7 @@ void drawRedRing();
 int pmuRead(uint8_t reg);
 void pmuSetBit(uint8_t reg, uint8_t bit);
 void batInit();
-void drawStatus();
+void drawStatus(bool eraseBacking = true);
 void drawSpeedBlock(bool over);
 uint8_t laneFlags(uint8_t code);
 void arcLine(float ox, float oy, float r, float a0, float a1, float w, uint16_t col);
