@@ -162,7 +162,8 @@ void loop() {
   static uint32_t lyricConnectionEpoch = 0;
   if (lyricConnectionEpoch != mediaConnectionEpoch) {
     lyricConnectionEpoch = mediaConnectionEpoch; musicLyrics = false; lyricImageGeneration = 0;
-    imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; musicDirty = true;
+    for (int s = 12; s <= 14; s++) { imgs[s].showW = 0; imgs[s].showH = 0; imgs[s].recvId = -1; }
+    musicDirty = true;
   }
   appleMedia.tick(bleConnected && bleAuthed && hidMusicMode, bleConnHandle, mediaConnectionEpoch, millis());
   static int lastControlMask = -1;
@@ -171,12 +172,9 @@ void loop() {
   if (appleMedia.controlAck) { musicAck = appleMedia.controlAck > 0 ? 9 : 10; appleMedia.controlAck = 0; musicAckUntil = millis() + 2500; musicDirty = true; }
   if (appleMedia.changed) {
     appleMedia.changed = false; musicDirty = true;
-    static uint32_t lyricGeneration = 0; static uint16_t lyricTitleRevision = 0, lyricArtistRevision = 0;
-    if (lyricGeneration != appleMedia.generation || lyricTitleRevision != appleMedia.values[0].revision || lyricArtistRevision != appleMedia.values[1].revision) {
-      lyricImageGeneration = 0;
-      lyricGeneration = appleMedia.generation; lyricTitleRevision = appleMedia.values[0].revision; lyricArtistRevision = appleMedia.values[1].revision;
-      imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1;
-    }
+    // AMS 字段刷新（播放进度/状态每次都会置 changed）不再清除歌词图（12/13/14）：
+    // 旧逻辑会把刚显示的歌词立刻擦掉，表现为歌词一闪而过或全黑。
+    // 曲目切换由 #LY 命令单独清理，避免显示上一首的歌词。
     if (hidMusicMode) { musicHave = appleMedia.available && appleMedia.values[0].text.length(); musicPlaying = appleMedia.playback.known && appleMedia.playback.state == 1; }
   }
   static unsigned long mediaDrawAt = 0;
