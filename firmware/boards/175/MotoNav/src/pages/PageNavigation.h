@@ -10,32 +10,36 @@ int16_t chordHalf[LCD_HEIGHT];   // 每一行在圆里的半宽（圆外不用�
 bool chordReady = false;
 void drawNavFrame();
 
-// v7.8 音乐页：歌名/歌手图片栏 5/6；#Z,有会话,播放中,按钮位掩码。
+// v7.13 音乐页重排：顶部歌名 + 歌手，中部三行歌词（上一句 / 当前句 / 下一句），底部按钮。
+// 去掉了 MUSIC 标题、PLAYING/PAUSED 状态、进度时间和 SWIPE LEFT TO RETURN 提示，
+// 把圆屏最宽的中段完整留给歌词；按钮相应下移。
 void drawMusic() {
   gfx->fillScreen(C_BLACK);
   onWaitScreen = false;
   frameIsMap = false;
-  printCentered("MUSIC", CX, 65, 4, C_CYAN);
   bool linked = bleConnected && bleAuthed;
-  if (hidMusicMode && linked && !appleMedia.available) {
-    printCentered("PHONE MEDIA KEYS", CX, 158, 2, C_WHITE);
-    printCentered("OPEN MUSIC APP ON PHONE", CX, 210, 2, C_GREY);
-  } else if (linked) {
-    drawTextImg(5, 158, 0xFF);
-    drawTextImg(6, 210, 0xBB);
-  } else printCentered("PHONE OFFLINE", CX, 170, 3, C_GREY);
-  bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
-  if (showLyrics) drawTextImg(12, 242, 0xDD);
-  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
-  String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
-  if (hidMusicMode) {
-    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
-      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
+  if (linked) {
+    // 歌名放在原 "MUSIC" 标题处，歌手紧接其下；长歌名由 drawTextImg 按圆形等比缩小。
+    drawTextImg(5, 72, 0xFF);
+    drawTextImg(6, 118, 0x9A);
+    if (hidMusicMode && !appleMedia.available && imgs[5].showW == 0 && imgs[6].showW == 0) {
+      printCentered("PHONE MEDIA KEYS", CX, 84, 2, C_WHITE);
+      printCentered("OPEN MUSIC APP ON PHONE", CX, 122, 2, C_GREY);
+    }
+  } else printCentered("PHONE OFFLINE", CX, 100, 3, C_GREY);
+
+  // 三行歌词：13 = 上一句（暗），12 = 当前句（亮），14 = 下一句（暗）。
+  bool showLyrics = linked && musicLyrics &&
+                    (imgs[12].showW > 0 || imgs[13].showW > 0 || imgs[14].showW > 0);
+  if (showLyrics) {
+    drawTextImg(13, 162, 0x5A);
+    drawTextImg(12, 214, 0xFF);
+    drawTextImg(14, 266, 0x5A);
   }
-  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
-  printCentered(state, CX, showLyrics ? 272 : 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
+
+  // 按钮下移到 362；不再占用中段显示播放状态或返回提示。
   for (int i = 0; i < 3; i++) {
-    int x = CX + (i - 1) * 100, y = 335;
+    int x = CX + (i - 1) * 100, y = 362;
     bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
     aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
@@ -53,15 +57,6 @@ void drawMusic() {
       gfx->fillRect(x + sign * 15 - 3, y - 15, 6, 30, c);
     }
   }
-  if (hidMusicMode && appleMedia.available) {
-    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
-    if (duration > 0 && appleMedia.playback.known) {
-      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
-      int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
-      char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
-      printCentered(time, CX, 392, 2, C_GREY);
-    }
-  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
   drawPageDots();
   needFlush = true;
 }
