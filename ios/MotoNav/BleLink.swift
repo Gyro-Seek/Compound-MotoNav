@@ -73,7 +73,7 @@ final class BleLink: NSObject, ObservableObject {
     private var lastState: [String: String] = [:]          // 文字状态（重连后补发）
     private var stateOrder: [String] = []
     private var lastImg: [Int: (w: Int, h: Int, data: Data)] = [:]
-    private var imgId = [Int](repeating: 0, count: 13)
+    private var imgId = [Int](repeating: 0, count: 15)
     private var phoneClock=PhoneClockSync()
     private var clockWriteID=0
     private var clockObserver:NSObjectProtocol?
@@ -313,11 +313,16 @@ final class BleLink: NSObject, ObservableObject {
     /// Remove queued/cached lyrics before an OFF command; no media-mode command here.
     func sendLyricsMode(_ message: String) {
         if message == "#ML,0" {
-            queue.removeAll { $0.key == "#LY" || $0.key?.hasPrefix("B12:") == true }
+            let lyricSlots = [12, 13, 14]
+            queue.removeAll { out in
+                guard let key = out.key else { return false }
+                return key == "#LY" || lyricSlots.contains { key.hasPrefix("B\($0):") }
+            }
             lastState.removeValue(forKey: "#LY"); stateOrder.removeAll { $0 == "#LY" }
+            for slot in lyricSlots { lastImg.removeValue(forKey: slot) }
         }
         send(message)
-        if message == "#ML,0" { sendImage(slot: 12, w: 0, h: 0, data: Data()) }
+        if message == "#ML,0" { for slot in [12, 13, 14] { sendImage(slot: slot, w: 0, h: 0, data: Data()) } }
     }
 
     /// 发一张文字图片（4 位灰度，两个像素一个字节）；w = 0 表示清空这一栏

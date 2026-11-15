@@ -86,4 +86,14 @@ struct LyricsTimeline {
         while low < high { let mid = (low + high) / 2; if cues[mid].time <= seconds { low = mid + 1 } else { high = mid } }
         return low > 0 ? cues[low - 1].text : ""
     }
+
+    /// 三行歌词上下文：上一句 / 当前句 / 下一句。间奏空行原样返回空串（固件清掉该槽）。
+    func context(at seconds: Double) -> (prev: String, current: String, next: String) {
+        guard seconds.isFinite, seconds >= 0 else { return ("", "", "") }
+        var low = 0, high = cues.count
+        while low < high { let mid = (low + high) / 2; if cues[mid].time <= seconds { low = mid + 1 } else { high = mid } }
+        let i = low > 0 ? low - 1 : -1
+        func text(_ j: Int) -> String { cues.indices.contains(j) ? cues[j].text : "" }
+        return (i > 0 ? text(i - 1) : "", i >= 0 ? text(i) : "", i >= 0 ? text(i + 1) : "")
+    }
 }

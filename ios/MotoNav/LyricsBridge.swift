@@ -2,8 +2,8 @@ import Foundation
 
 /// Optional third-party lyrics. Display is deliberately decoupled from HID/AMS
 /// availability: as long as the "逐句歌词" toggle is on and BLE is ready, the round
-/// screen always shows either the current line, a static lyric line, or a short
-/// Chinese status — never a blank lyrics area with no explanation.
+/// screen always shows a three-line context (previous / current / next), a static
+/// lyric line, or a short Chinese status — never a blank lyrics area with no explanation.
 final class LyricsBridge {
     static let shared = LyricsBridge()
     private struct Record: Decodable {
@@ -15,13 +15,13 @@ final class LyricsBridge {
     private var key = "", token = UUID(), task: URLSessionDataTask?, work: DispatchWorkItem?, timer: Timer?
     private var titleRevision: UInt16 = 0, artistRevision: UInt16 = 0
     private var generation: UInt32?, playbackRevision: UInt16 = 0, clock: MediaPlaybackClock?
-    private var track: LyricsTrack?, timeline: LyricsTimeline?, lastLine: String?, lyricsEnabled = false
+    private var track: LyricsTrack?, timeline: LyricsTimeline?, lastLinesKey: String?, lyricsEnabled = false
     private var systemPlaying: Bool?
 
     /// Push a short Chinese status onto slot 12 instead of leaving the area blank.
     private func showStatus(_ text: String) {
         BleLink.shared.mediaLyricsStatus = text
-        sendLine(text)
+        sendLines(prev: "", current: text, next: "")
     }
 
     /// AMS / HID path: metadata is relayed from the round screen.
@@ -34,7 +34,7 @@ final class LyricsBridge {
         systemPlaying = nil
         if generation != metadata.generation { resetTrack(); generation = metadata.generation; playbackRevision = 0; clock = nil }
         if titleRevision != metadata.values[0].revision || artistRevision != metadata.values[1].revision {
-            titleRevision = metadata.values[0].revision; artistRevision = metadata.values[1].revision; lastLine = nil
+            titleRevision = metadata.values[0].revision; artistRevision = metadata.values[1].revision; lastLinesKey = nil
         }
         if playbackRevision != metadata.values[4].revision {
             playbackRevision = metadata.values[4].revision
@@ -79,7 +79,7 @@ final class LyricsBridge {
             }
             work = item; DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
         }
-        if force { lastLine = nil }
+        if force { lastLinesKey = nil }
         if timer == nil { timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.tick() } }
         tick()
     }
@@ -92,7 +92,7 @@ final class LyricsBridge {
 
     private func resetTrack() {
         token = UUID(); task?.cancel(); task = nil; work?.cancel(); work = nil; key = ""; track = nil; timeline = nil
-        sendLine("")
+        sendLines(prev: "", current: "", next: "")
     }
 
     private func fetch(_ track: LyricsTrack, token: UUID) {
@@ -141,26 +141,34 @@ final class LyricsBridge {
         if let timeline = timeline {
             let dur = track?.duration ?? 0
             if let clock = clock {
-                let line = timeline.line(at: clock.position(now: ProcessInfo.processInfo.systemUptime, duration: dur > 0 ? dur : 3600))
-                sendLine(line.isEmpty ? (timeline.cues.first { !$0.text.isEmpty }?.text ?? "") : line)
+                let pos = clock.position(now: ProcessInfo.processInfo.systemUptime, duration: dur > 0 ? dur : 3600)
+                let c = timeline.context(at: pos)
+                let current = c.current.isEmpty ? (timeline.cues.first { !$0.text.isEmpty }?.text ?? "") : c.current
+                sendLines(prev: c.prev, current: current, next: c.next)
             } else {
                 // No playback clock: show the first non-empty line as static lyrics.
-                sendLine(timeline.cues.first { !$0.text.isEmpty }?.text ?? "")
+                sendLines(prev: "", current: timeline.cues.first { !$0.text.isEmpty }?.text ?? "", next: "")
             }
         } else {
-            // No timeline yet: show WHY instead of pushing an empty image.
+            // No timeline yet: show WHY instead of pushing empty images.
             let status = BleLink.shared.mediaLyricsStatus
-            sendLine(status.isEmpty ? "正在匹配逐句歌词…" : status)
+            sendLines(prev: "", current: status.isEmpty ? "正在匹配逐句歌词…" : status, next: "")
         }
     }
 
-    private func sendLine(_ text: String) {
-        guard lastLine != text else { return }; lastLine = text
-        if !text.isEmpty {
-            // #LY travels as a text command; slot 12 is a binary image. Both are
-            // enqueued in order so the firmware never sees an unannounced image.
+    /// 三行歌词：13 = 上一句（小/暗），12 = 当前句（大/亮），14 = 下一句（小/暗）。
+    /// 三张图共用一个 #LY 切歌信号；只要任一行变动就整组重发，避免上下文错位。
+    private func sendLines(prev: String, current: String, next: String) {
+        let key = prev + "\n" + current + "\n" + next
+        guard lastLinesKey != key else { return }
+        lastLinesKey = key
+        if !(prev.isEmpty && current.isEmpty && next.isEmpty) {
+            // #LY travels as a text command; slots 12/13/14 are binary images. All are
+            // enqueued in order so the firmware never sees unannounced images.
             BleLink.shared.sendOnce("#LY,\(generation ?? 1),\(titleRevision),\(artistRevision)")
         }
-        TextImage.send(slot: 12, String(text.prefix(200)), maxW: 360, size: 22, minSize: 16)
+        TextImage.send(slot: 13, String(prev.prefix(200)), maxW: 340, size: 19, minSize: 15)
+        TextImage.send(slot: 12, String(current.prefix(200)), maxW: 360, size: 26, minSize: 18)
+        TextImage.send(slot: 14, String(next.prefix(200)), maxW: 340, size: 19, minSize: 15)
     }
 }
