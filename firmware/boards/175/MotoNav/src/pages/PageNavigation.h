@@ -88,6 +88,7 @@ void renderPage(int p, int detail) {
   if (p == 2) drawMusic();
   else if (p == 1) { wxDetail = detail; drawWeather(); }
   else if (p == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+  else if (p == FixedPageLayout::GFORCE_PAGE) drawGForcePage();
   else if (inNav) drawNavFrame();
   else drawWaiting(bleConnected ? WAIT_READY : WAIT_NOLINK);
   page = keep; wxDetail = keepDetail; sliding = ks;
@@ -202,10 +203,17 @@ void slideCommit() {
     if (!wxHave || millis() - wxAt > 15UL * 60 * 1000) { pendingEvt = "T,W"; wxAskAt = millis(); }
   } else if (page == FixedPageLayout::CLOCK_PAGE) {
     onWaitScreen = false;                   // slideNew 里已是渲染好的时钟页
+  } else if (page == FixedPageLayout::GFORCE_PAGE) {
+    onWaitScreen = false;                   // slideNew 里已是渲染好的 G 值小狗页
   } else {
     if (inNav) navDirty = true;
     else { riderPrevF = -1; riderPrevZ = -2; catForce = true; }
   }
+  // 板载 IMU：进出 G 值页时清空 G 值与等级，下次进入从微笑开始。
+  // 只重置状态机，不重置 gforceImu 的重力基线（设备安装角不变，保留更稳）。
+  static bool wasGfPage = false;
+  const bool isGfPage = (page == FixedPageLayout::GFORCE_PAGE);
+  if (isGfPage != wasGfPage) { wasGfPage = isGfPage; gforce.reset(); }
 }
 
 // 没换成：回到原页面
@@ -215,6 +223,7 @@ void slideCancel() {
   if (page == 2) musicDirty = true;
   else if (page == 1) wxDirty = false;
   else if (page == FixedPageLayout::CLOCK_PAGE) { /* renderPage 已重画时钟页 */ }
+  else if (page == FixedPageLayout::GFORCE_PAGE) { /* renderPage 已重画 G 值小狗页 */ }
   else if (inNav) navDirty = true;
   else { onWaitScreen = true; catForce = true; }
   needFlush = true;
@@ -292,6 +301,7 @@ void dragAbort() {
   sliding = false; dragging = false;
   if (page == 2) musicDirty = true; else if (page == 1) wxDirty = true;
   else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+  else if (page == FixedPageLayout::GFORCE_PAGE) drawGForcePage();
   else if (inNav) navDirty = true;
 }
 

@@ -108,6 +108,7 @@ unsigned long pageAt = 0;
 // 页面顺序对应滑动位置：音乐在左，主页居中，天气在右；导航主页不显示。
 void drawPageDots() {
   if (page == FixedPageLayout::CLOCK_PAGE) return;   // 时钟页是整屏黑盘，不画分页点
+  if (page == FixedPageLayout::GFORCE_PAGE) return;  // G 值小狗页是整屏画面，不画分页点
   if (page == 0 && inNav) return;
   const int pageOrder[] = {2, 0, 1};
   for (int i = 0; i < 3; i++) {
@@ -143,6 +144,7 @@ void drawWaiting(int st) {
   if (page == 2) { onWaitScreen = false; musicDirty = true; return; }
   if (page == 1) { onWaitScreen = false; wxDirty = true; return; }   // v5.3 正在看天气：先不画首页，滑回来时再画
   if (page == FixedPageLayout::CLOCK_PAGE) { onWaitScreen = false; drawClockPage(); return; }
+  if (page == FixedPageLayout::GFORCE_PAGE) { onWaitScreen = false; drawGForcePage(); return; }
   gfx->fillScreen(C_BLACK);
   onWaitScreen = true; waitSt = st;          // v3.6 首页猫猫 → v4.6 像素骑手
   riderPrevF = -1; riderPrevZ = -2;
