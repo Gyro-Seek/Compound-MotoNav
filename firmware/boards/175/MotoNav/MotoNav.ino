@@ -21,6 +21,7 @@
 #include "src/pages/IncomingCall.h"
 #include "src/pages/WeatherPage.h"
 #include "src/pages/ClockPage.h"
+#include "src/pages/GForcePage.h"
 #include "src/pages/PageNavigation.h"
 #include "src/map/MapState.h"
 #include "src/map/VectorMapReceiver.h"
@@ -53,6 +54,7 @@ void setup() {
   Wire.begin(IIC_SDA, IIC_SCL);
   touchInit();                                         // v5.2 触摸屏
   batInit();                                           // v6.8 电源芯片（电量）
+  gforceImuOK = gforceImuInit();                       // 板载 QMI8658：探测并配置；失败则 G 页降级为静态
 
   // v2.3 读取保存的屏幕数据线速度（默认 40MHz，和官方示例一样）
   {
@@ -257,6 +259,7 @@ void loop() {
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
     else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+    else if (page == FixedPageLayout::GFORCE_PAGE) drawGForcePage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -273,6 +276,7 @@ void loop() {
     if (page == 2) musicDirty = true;
     else if (page == 1) wxDirty = true;
     else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+    else if (page == FixedPageLayout::GFORCE_PAGE) drawGForcePage();
     else if (inNav) navDirty = true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
@@ -293,6 +297,7 @@ void loop() {
       if (page == 2) musicDirty = true;
       else if (page == 1) wxDirty = true;
       else if (page == FixedPageLayout::CLOCK_PAGE) drawClockPage();
+      else if (page == FixedPageLayout::GFORCE_PAGE) drawGForcePage();
       else if (inNav) navDirty = true;
       else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
     }
@@ -301,6 +306,7 @@ void loop() {
   musicTick();
   weatherTick();                                       // v5.3 天气页
   clockTick();                                         // iOS 时钟页：每秒走一下秒针
+  gforceTick();                                        // G 值小狗页：板载 IMU 采样 / 等级 / 动画重画
   if (inNav && navDirty && !fxOn && !callOn && !pairOn && page == 0 && !sliding) {
     drawNavFrame();
     navDirty = false;
@@ -330,6 +336,7 @@ void loop() {
     if(page==2)musicDirty=true;
     else if(page==1)wxDirty=true;
     else if(page==FixedPageLayout::CLOCK_PAGE)drawClockPage();
+    else if(page==FixedPageLayout::GFORCE_PAGE)drawGForcePage();
     else if(inNav)navDirty=true;
     else drawWaiting(conn ? WAIT_READY : WAIT_NOLINK);
   }
