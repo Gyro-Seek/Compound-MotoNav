@@ -77,6 +77,8 @@ void drawPageDots();
 void drawWaiting(int st);
 void drawClockPage();              // iOS 时钟页（定义见 src/pages/ClockPage.h）
 void clockTick();                  // 每秒刷新秒针
+void drawGForcePage();             // G 值小狗页（定义见 src/pages/GForcePage.h）
+void gforceTick();                 // G 值：板载 IMU 采样 / 平滑 / 等级 / 动画重画
 void drawPairScreen();
 static float frand(float a, float b);
 void startArriveFx(bool wp);
