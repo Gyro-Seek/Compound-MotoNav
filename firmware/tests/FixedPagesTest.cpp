@@ -84,6 +84,9 @@ namespace AppleMediaData { double duration(const char*){return 0;} }
 bool hidMediaReady(){return false;}
 struct {bool enqueue(int){return true;}} hidPulses;
 void drawClockPage(){}   // 时钟页渲染 stub（布局测试只关心换页状态）
+void drawGForcePage(){}  // G 值小狗页渲染 stub
+struct GForceMeterStub { void reset(){} } gforce;   // 离开 G 页时 PageNavigation.h 会调用
+String pendingGfEvt;                                 // 进出 G 页的 TX 通知槽位
 #include "../boards/175/MotoNav/FixedPageLayout.h"
 #include "../boards/175/MotoNav/src/pages/WeatherPage.h"
 #include "../boards/175/MotoNav/src/pages/PageNavigation.h"
@@ -128,15 +131,23 @@ int main(){
   swipe(0,-350);assert(page==FixedPageLayout::CLOCK_PAGE&&!dragging);
   swipe(0,350);assert(page==0&&!dragging);
   reset(FixedPageLayout::CLOCK_PAGE);swipe(0,350);assert(page==0);
-  // 纯布局层的边界：主页只有上滑能进时钟，时钟页只有下滑能回主页。
+  // 纯布局层的边界：主页上滑进时钟（方向不变）、下滑进 G 值小狗页；两个子页反向滑回主页。
   assert(FixedPageLayout::move(0,0,false,-1).allowed &&
          FixedPageLayout::move(0,0,false,-1).page==FixedPageLayout::CLOCK_PAGE);
-  assert(!FixedPageLayout::move(0,0,false,1).allowed);
+  assert(FixedPageLayout::move(0,0,false,1).allowed &&
+         FixedPageLayout::move(0,0,false,1).page==FixedPageLayout::GFORCE_PAGE);
   assert(!FixedPageLayout::move(FixedPageLayout::CLOCK_PAGE,0,false,-1).allowed);
   assert(FixedPageLayout::move(FixedPageLayout::CLOCK_PAGE,0,false,1).page==0);
+  assert(!FixedPageLayout::move(FixedPageLayout::GFORCE_PAGE,0,false,1).allowed);
+  assert(FixedPageLayout::move(FixedPageLayout::GFORCE_PAGE,0,false,-1).page==0);
   assert(!FixedPageLayout::move(2,0,false,-1).allowed);
-  // 下滑(sign>0)不应再进时钟；从主页下滑应无目标，避免把左右换页误判成竖向。
-  reset(0);swipe(0,350);assert(page==0&&!dragging);
+  // 主页下滑进 G 页；G 页不能继续下滑 / 左右滑；上滑回主页。
+  reset(0);swipe(0,350);assert(page==FixedPageLayout::GFORCE_PAGE&&!dragging);
+  swipe(0,350);assert(page==FixedPageLayout::GFORCE_PAGE&&!dragging);
+  swipe(350,0);assert(page==FixedPageLayout::GFORCE_PAGE&&!dragging);
+  swipe(-350,0);assert(page==FixedPageLayout::GFORCE_PAGE&&!dragging);
+  swipe(0,-350);assert(page==0&&!dragging);
+  reset(FixedPageLayout::GFORCE_PAGE);swipe(0,-350);assert(page==0);
   reset(2);swipe(350,0);assert(page==2&&!dragging);
   swipe(0,350);assert(page==2&&!dragging);
 
@@ -172,7 +183,7 @@ int main(){
 
   // Real multi-sample drags: vertical clock swaps must behave exactly like the
   // horizontal page swaps (same dragMove/dragEnd, no clock-only thresholds).
-  const int CLK=FixedPageLayout::CLOCK_PAGE;
+  const int CLK=FixedPageLayout::CLOCK_PAGE, GF=FixedPageLayout::GFORCE_PAGE;
   gesture(-200,0);     assert(page==1&&!dragging);        // left
   gesture(200,0);      assert(page==2&&!dragging);        // right
   gesture(0,-200);     assert(page==CLK&&!dragging);      // up -> clock
@@ -181,11 +192,14 @@ int main(){
   gesture(-200,60);    assert(page==1&&!dragging);        // slight drift, horizontal wins
   gesture(0,200,CLK);  assert(page==0&&!dragging);        // clock down -> home
   gesture(0,-200,CLK); assert(page==CLK&&!dragging);      // clock up -> no target
-  gesture(0,200);      assert(page==0&&!dragging);        // home down -> no target, not stuck
+  gesture(0,200);      assert(page==GF&&!dragging);       // home down -> G-force dog page
+  gesture(0,-200,GF);  assert(page==0&&!dragging);        // G page up -> home
+  gesture(0,200,GF);   assert(page==GF&&!dragging);       // G page down -> no target, not stuck
+  gesture(200,0,GF);   assert(page==GF&&!dragging);       // G page horizontal -> no target
   gesture(0,-20);      assert(page==0&&!dragging);        // very short drag -> springs back (same as horizontal)
   // A first-frame sideways twitch is classified by the same rule as any other
   // drag (dominant axis wins); it must never leave the gesture stuck dragging.
   gesture(0,-220,0,20,18,0); assert(!dragging);
 
-  std::puts("PASS: fixed adjacency, iOS clock page up/down, gesture commit/cancel/abort, page persistence, offline access, missing/rain/alert states, and real multi-sample drags (vertical == horizontal)");
+  std::puts("PASS: fixed adjacency, clock up / G-force down, gesture commit/cancel/abort, page persistence, offline access, missing/rain/alert states, and real multi-sample drags (vertical == horizontal)");
 }
